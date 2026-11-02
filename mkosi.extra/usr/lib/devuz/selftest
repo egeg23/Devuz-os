@@ -53,9 +53,10 @@ say "ROOT_SOURCE $(findmnt -n -o SOURCE / || true)"
 [ "$root_fs" = ext4 ] || { say "ERROR root не ext4"; fail=1; }
 if [ -e /etc/.devuz-factory-etc ]; then say "FACTORY_ETC yes"; else say "FACTORY_ETC no"; fail=1; fi
 # Находки разведки недели 1 на пустом /etc: ссылки /etc/alternatives
-# (awk) и настройки PAM.
+# (awk) и настройки PAM (общий /etc/pam.d/other из libpam-runtime; пакета
+# login в образе нет, поэтому /etc/pam.d/login и не ждём).
 if command -v awk >/dev/null; then say "ALTERNATIVES yes"; else say "ALTERNATIVES no"; fail=1; fi
-if [ -e /etc/pam.d/login ]; then say "PAM yes"; else say "PAM no"; fail=1; fi
+if [ -e /etc/pam.d/other ]; then say "PAM yes"; else say "PAM no"; fail=1; fi
 # Secure Boot: последний байт переменной SecureBoot (1 — включён).
 sb_var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
 sb=$( [ -r "$sb_var" ] && tail -c1 "$sb_var" | od -An -tu1 | tr -d ' ' )
