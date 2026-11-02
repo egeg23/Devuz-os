@@ -7,7 +7,10 @@ Documentation=https://github.com/egeg23/devuz-os
 # загрузке их нет — служба пропускается. Строку ядра не используем: под
 # Secure Boot systemd-stub не берёт её из SMBIOS (неделя 3).
 ConditionCredential=devuz.test
-After=devuz-ready.service systemd-bless-boot.service network-online.target
+# After=multi-user.target обязателен: иначе multi-user.target сам встаёт
+# после этой службы (она включена от него), а служба — после devuz-ready,
+# который после multi-user.target: цикл, и systemd выкидывает одну из служб.
+After=multi-user.target devuz-ready.service systemd-bless-boot.service network-online.target
 Wants=network-online.target
 
 [Service]
