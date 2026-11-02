@@ -8,6 +8,11 @@ Documentation=https://github.com/egeg23/devuz-os
 After=multi-user.target
 Before=boot-complete.target
 
+# Не дошли до готовности — перезагрузка. Новая версия получает так 3 попытки
+# (счёт загрузок в имени UKI), потом systemd-boot сам вернёт прошлую.
+# В офисе клиента нет админа: лучше откатиться, чем висеть.
+FailureAction=reboot
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
