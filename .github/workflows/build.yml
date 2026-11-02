@@ -150,8 +150,7 @@ jobs:
           python3 -m http.server 8080 --directory "$WORK/serve-next" >"$WORK/http-next.log" 2>&1 &
           # Запускаем образ V; служба теста ставит V.1 и перезагружается в неё.
           export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
-          export TEST_UNIT=devuz-update-test.service
-          export EXTRA_CMDLINE="devuz.update_url=http://10.0.2.2:8080/ devuz.update_expect=$next"
+          export TEST_CRED="update,http://10.0.2.2:8080/,$next"
           export EXPECT_VERSION="$next" LOG=update.log TEST_TIMEOUT=900
           export TEST_TITLE="Тест обновления A→B"
           rc=0; tests/boot-test.sh || rc=$?
@@ -173,8 +172,8 @@ jobs:
           # V ставит «битую» V.2; та 3 раза не доходит до готовности,
           # systemd-boot возвращает V — проверка должна закончиться на V.
           export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
-          export TEST_UNIT=devuz-update-test.service ALLOW_FAILED_START=1
-          export EXTRA_CMDLINE="devuz.update_url=http://10.0.2.2:8081/ devuz.update_expect=$DEVUZ_VERSION"
+          export ALLOW_FAILED_START=1
+          export TEST_CRED="update,http://10.0.2.2:8081/,$DEVUZ_VERSION"
           export EXPECT_VERSION="$DEVUZ_VERSION" LOG=rollback.log TEST_TIMEOUT=900
           export TEST_TITLE="Тест отката"
           rc=0; tests/boot-test.sh || rc=$?

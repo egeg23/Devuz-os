@@ -1,0 +1,14 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Что делать в тесте — из учётных данных devuz.test (через запятую):
+#   selftest                         — самопроверка;
+#   update,<адрес сервера>,<версия>  — тест обновления A/B (см. update-test).
+set -u
+cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
+IFS=, read -r mode arg1 arg2 <<<"$cred"
+echo "DEVUZ-TEST режим «${mode:-?}»"
+case "$mode" in
+    selftest) systemctl start --no-block devuz-selftest.service ;;
+    update)   exec /usr/lib/devuz/update-test "$arg1" "$arg2" ;;
+    *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
+esac

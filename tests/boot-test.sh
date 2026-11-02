@@ -7,12 +7,11 @@
 #
 # Переменные:
 #   TEST_TIMEOUT   — сколько секунд ждать (по умолчанию 900);
-#   EXTRA_CMDLINE  — добавить в строку ядра (для проверки «сломанного» образа);
+#   EXTRA_CMDLINE  — добавить в строку ядра (только ручная проверка emergency);
 #   MKOSI_ARGS     — дополнительные опции mkosi (каталоги вывода и т.п.);
 #   EXPECT_VERSION — ожидаемая версия образа (если задана);
-#   TEST_UNIT      — какую службу запустить строкой ядра (по умолчанию
-#                    devuz-selftest.service; для теста обновления —
-#                    devuz-update-test.service);
+#   TEST_CRED      — значение учётных данных devuz.test (по умолчанию
+#                    selftest; тест обновления — update,<адрес>,<версия>);
 #   ALLOW_FAILED_START=1 — не считать ошибкой «Failed to start» (тест отката:
 #                    «битая» версия падает нарочно).
 set -uo pipefail
@@ -34,7 +33,8 @@ timeout --foreground "$TEST_TIMEOUT" \
     mkosi ${MKOSI_ARGS:-} \
         --ephemeral=yes \
         --console=native \
-        --kernel-command-line-extra="systemd.wants=${TEST_UNIT:-devuz-selftest.service} ${EXTRA_CMDLINE:-}" \
+        --credential="devuz.test=${TEST_CRED:-selftest}" \
+        ${EXTRA_CMDLINE:+--kernel-command-line-extra="$EXTRA_CMDLINE"} \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
     now=${EPOCHREALTIME/[.,]/}
