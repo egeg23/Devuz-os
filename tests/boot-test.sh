@@ -33,7 +33,6 @@ timeout --foreground "$TEST_TIMEOUT" \
         --ephemeral=yes \
         --console=native \
         --credential="devuz.test=${TEST_CRED:-selftest}" \
-        --forward-journal="$PWD/$LOG.journal" \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
     now=${EPOCHREALTIME/[.,]/}
@@ -42,16 +41,11 @@ while IFS= read -r line; do
 done | tee "$LOG.raw"
 rc=${PIPESTATUS[0]}
 
-# Убираем цветовые коды и возвраты каретки. Под Secure Boot консоль hvc0 не
-# включается (строка ядра из SMBIOS не берётся), поэтому к выводу консоли
-# добавляем журнал гостя, который mkosi переслал на раннер.
+# Убираем цветовые коды и возвраты каретки. (Пересылка журнала гостя через
+# --forward-journal в mkosi v27.1 не работает: systemd-journal-remote из tools
+# tree падает с «Unknown socket passed on fd:4», и гость висит на
+# systemd-journal-flush. Читаем консоль hvc0.)
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$LOG.raw" >"$LOG"
-if [ -e "$LOG.journal" ]; then
-    echo "===== журнал гостя =====" >>"$LOG"
-    journalctl --file="$LOG.journal" -o short-monotonic --no-pager >>"$LOG" 2>&1 || true
-else
-    echo "::warning::журнал гостя не пришёл ($LOG.journal)"
-fi
 
 fail=0
 err() { echo "::error::$*"; summary "- ❌ $*"; fail=1; }

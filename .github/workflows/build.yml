@@ -272,6 +272,5 @@ jobs:
             boot.log
             update.log
             rollback.log
-            *.journal
           if-no-files-found: warn
           retention-days: 7
