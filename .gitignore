@@ -1,0 +1,18 @@
+# Ключи и пароли — никогда в репозиторий
+mkosi.key
+mkosi.crt
+*.key
+*.pem
+mkosi.rootpw
+mkosi.passphrase
+
+# Результаты и кэш сборки
+mkosi.output/
+mkosi.cache/
+mkosi.builddir/
+mkosi.tools/
+mkosi.local.conf
+*.raw
+*.efi
+*.zst
+*.xz
