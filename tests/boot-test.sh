@@ -112,6 +112,7 @@ if [ -n "$ready_line" ]; then
     fi
     [ "$usr_fs" = "erofs" ] || err "/usr не на erofs"
     [ "$(field USR_VERITY)" = yes ] || err "/usr не под dm-verity"
+    [ "$(field BOOT_COUNT)" = "засчитана" ] || err "загрузка не засчитана (systemd-bless-boot)"
 fi
 
 if [ "$fail" -eq 0 ]; then
