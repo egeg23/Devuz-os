@@ -1,0 +1,11 @@
+# Что включено в DevUz OS по умолчанию.
+enable systemd-networkd.service
+enable systemd-networkd.socket
+enable systemd-resolved.service
+enable devuz-ready.service
+# Самопроверка включается только строкой ядра systemd.wants=devuz-selftest.service.
+disable devuz-selftest.service
+# Политику TPM через systemd-pcrlock не используем: привязка диска к TPM —
+# неделя 3, там и решим как. Сейчас эти службы падают в QEMU (swtpm без
+# AES-128-CFB) и на коробке без настроенной политики ничего не дают.
+disable systemd-pcrlock*
