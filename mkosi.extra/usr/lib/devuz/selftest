@@ -51,6 +51,26 @@ root_fs=$(findmnt -n -o FSTYPE / || true)
 say "ROOT_FS ${root_fs}"
 say "ROOT_SOURCE $(findmnt -n -o SOURCE / || true)"
 [ "$root_fs" = ext4 ] || { say "ERROR root не ext4"; fail=1; }
+# Root зашифрован: /dev/mapper/root поверх LUKS2. Заголовок LUKS2 (JSON
+# со смещения 4096) читаем без cryptsetup: токен systemd-tpm2 и PCR политики.
+root_luks=no tpm2_token=no tpm2_pcrs=нет tpm2_pubkey_pcrs=нет
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] && [ "$(cat "$d/name")" = root ] || continue
+    case "$(cat "$d/uuid")" in CRYPT-LUKS2-*) root_luks=yes ;; esac
+    for s in "$d"/../slaves/*; do
+        hdr=$(dd if="/dev/${s##*/}" bs=4096 skip=1 count=3 status=none | tr -d '\000')
+        case "$hdr" in *'"type":"systemd-tpm2"'*) tpm2_token=yes ;; esac
+        v=${hdr#*\"tpm2-pcrs\":\[}; [ "$v" != "$hdr" ] && tpm2_pcrs=${v%%]*}
+        v=${hdr#*\"tpm2_pubkey_pcrs\":\[}; [ "$v" = "$hdr" ] && v=${hdr#*\"tpm2-pubkey-pcrs\":\[}
+        [ "$v" != "$hdr" ] && tpm2_pubkey_pcrs=${v%%]*}
+    done
+done
+say "ROOT_LUKS ${root_luks}"
+say "TPM2_TOKEN ${tpm2_token}"
+say "TPM2_PCRS ${tpm2_pcrs}"
+say "TPM2_PUBKEY_PCRS ${tpm2_pubkey_pcrs}"
+[ "$root_luks" = yes ] || { say "ERROR root не зашифрован"; fail=1; }
+[ "$tpm2_token" = yes ] || { say "ERROR нет ключа TPM2 в LUKS2"; fail=1; }
 if [ -e /etc/.devuz-factory-etc ]; then say "FACTORY_ETC yes"; else say "FACTORY_ETC no"; fail=1; fi
 # Находки разведки недели 1 на пустом /etc: ссылки /etc/alternatives
 # (awk) и настройки PAM (общий /etc/pam.d/other из libpam-runtime; пакета

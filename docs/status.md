@@ -18,6 +18,7 @@
 - Ядро: версия в `kernel.lock`, пакеты в GitHub Release `kernel-<версия>`; выкладывает `kernel.yml` (единственный workflow с правом записи).
 - `tools/prepare-packages.sh` перед сборкой: ядро из Release + пустой пакет `devuz-no-initramfs` (чтобы не ставился dracut).
 - Разметка образа: ESP и слоты A/B по три раздела (usr, usr-verity, usr-verity-sig). Ярлык слота `devuz_<версия>`, свободный — `_empty`. Root в образе нет: его создаёт `systemd-repart` в initrd при первой загрузке (`/usr/lib/repart.d/50-root.conf`, пакет `systemd-repart` в initrd через `InitrdPackages=`); в QEMU диск растёт до 8 ГБ (`RuntimeSize=`).
+- Root зашифрован: `Encrypt=tpm2` в `50-root.conf` — LUKS2, ключ в TPM по PCR 7 (Secure Boot) + подписанной политике PCR 11 (подпись в UKI, `systemd-measure`, тот же ключ). В initrd и образе `systemd-cryptsetup` и `libtss2-*` (systemd открывает их через dlopen). В тесте `TPM=yes` (swtpm).
 - `/etc` при первой загрузке: `mkosi.finalize` сохраняет `/etc` сборки в `/usr/share/factory/etc`, `devuz-factory-etc.service` (до firstboot/sysusers/tmpfiles) копирует его в пустой `/etc`, ничего не перезаписывая. Мастер первой загрузки выключен (`systemd.firstboot=no` в UKI).
 - `/usr` под dm-verity: `usrhash=` в UKI, systemd находит разделы по UUID из хеша.
 - UKI: `devuz_<версия>+3.efi` (3 попытки); `systemd-bless-boot` засчитывает после `devuz-ready.service`; `FailureAction=reboot`.
