@@ -79,6 +79,20 @@ jobs:
           mkosi genkey
           openssl x509 -in mkosi.crt -noout -subject -enddate
 
+      - name: Тестовый ключ подписи обновлений GPG (на лету, никуда не сохраняется)
+        run: |
+          # Закрытый ключ живёт только в $GNUPGHOME этого прогона. Открытый кладём
+          # в образ по пути, где его ищет systemd-sysupdate (systemd 257:
+          # /usr/lib/systemd/import-pubring.gpg) — через отдельное дерево файлов.
+          export GNUPGHOME="$WORK/gnupg"
+          mkdir -p -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key "DevUz test updates <noreply@devuz.invalid>" ed25519 sign 30d
+          mkdir -p "$WORK/keys-tree/usr/lib/systemd"
+          gpg --export >"$WORK/keys-tree/usr/lib/systemd/import-pubring.gpg"
+          gpg --list-keys
+          echo "GNUPGHOME=$GNUPGHOME" >>"$GITHUB_ENV"
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/keys-tree" >>"$GITHUB_ENV"
+
       - name: Пакеты для сборки (ядро из Release, без dracut)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,8 +169,10 @@ jobs:
           next="$DEVUZ_VERSION.1"
           mkdir -p "$WORK/output-next" "$WORK/serve-next"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-next" \
-                --workspace-directory="$WORK/workspace" --image-version="$next" -f build
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --image-version="$next" -f build
           python3 tests/publish-update.py "$WORK/output-next" "$next" "$WORK/serve-next"
+          gpg --batch --detach-sign --output "$WORK/serve-next/SHA256SUMS.gpg" "$WORK/serve-next/SHA256SUMS"
           python3 -m http.server 8080 --directory "$WORK/serve-next" >"$WORK/http-next.log" 2>&1 &
           # Запускаем образ V; служба теста ставит V.1 и перезагружается в неё.
           export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
@@ -165,6 +181,11 @@ jobs:
           export TEST_TITLE="Тест обновления A→B"
           rc=0; tests/boot-test.sh || rc=$?
           grep -q 'DEVUZ-UPDATE INSTALLED' update.log || { echo "::error::sysupdate не поставил обновление"; rc=1; }
+          if grep -q 'Good signature' update.log; then
+            echo "- подпись SHA256SUMS.gpg проверена: \`$(grep -m1 -o 'Good signature.*' update.log)\`" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::нет «Good signature» — подпись обновления не проверялась"; rc=1
+          fi
           echo "- запросы к серверу обновлений:" >>"$GITHUB_STEP_SUMMARY"
           sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
           exit $rc
@@ -175,9 +196,10 @@ jobs:
           bad="$DEVUZ_VERSION.2"
           mkdir -p "$WORK/output-bad" "$WORK/serve-bad"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-bad" \
-                --workspace-directory="$WORK/workspace" --image-version="$bad" \
-                --environment=DEVUZ_TEST_BROKEN=1 -f build
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --image-version="$bad" --environment=DEVUZ_TEST_BROKEN=1 -f build
           python3 tests/publish-update.py "$WORK/output-bad" "$bad" "$WORK/serve-bad"
+          gpg --batch --detach-sign --output "$WORK/serve-bad/SHA256SUMS.gpg" "$WORK/serve-bad/SHA256SUMS"
           python3 -m http.server 8081 --directory "$WORK/serve-bad" >"$WORK/http-bad.log" 2>&1 &
           # V ставит «битую» V.2; та 3 раза не доходит до готовности,
           # systemd-boot возвращает V — проверка должна закончиться на V.
