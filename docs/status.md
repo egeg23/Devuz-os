@@ -24,6 +24,7 @@
 - Тесты включаются учётными данными `devuz.test` (через SMBIOS, `mkosi vm --credential=`): `devuz-test.service` с `ConditionCredential=`; значения `selftest` или `update,<адрес>,<версия>`. Строку ядра для тестов не используем (под Secure Boot она из SMBIOS не берётся).
 - Ручные режимы `build.yml` (`sabotage`): `no-kernel`, `emergency`, `corrupt-usr` (должны быть красными), `usr-only` (разведка).
 - Ключи: тестовые генерируются в Actions на лету (`mkosi genkey`), в репозитории ключей нет никогда.
+- Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`). Журнал гостя тест читает через `--forward-journal` (консоль hvc0 под Secure Boot не включается).
 
 ## Грабли, на которые уже наступили
 

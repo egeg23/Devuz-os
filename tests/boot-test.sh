@@ -7,7 +7,6 @@
 #
 # Переменные:
 #   TEST_TIMEOUT   — сколько секунд ждать (по умолчанию 900);
-#   EXTRA_CMDLINE  — добавить в строку ядра (только ручная проверка emergency);
 #   MKOSI_ARGS     — дополнительные опции mkosi (каталоги вывода и т.п.);
 #   EXPECT_VERSION — ожидаемая версия образа (если задана);
 #   TEST_CRED      — значение учётных данных devuz.test (по умолчанию
@@ -34,7 +33,7 @@ timeout --foreground "$TEST_TIMEOUT" \
         --ephemeral=yes \
         --console=native \
         --credential="devuz.test=${TEST_CRED:-selftest}" \
-        ${EXTRA_CMDLINE:+--kernel-command-line-extra="$EXTRA_CMDLINE"} \
+        --forward-journal="$PWD/$LOG.journal" \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
     now=${EPOCHREALTIME/[.,]/}
@@ -43,8 +42,16 @@ while IFS= read -r line; do
 done | tee "$LOG.raw"
 rc=${PIPESTATUS[0]}
 
-# Убираем цветовые коды и возвраты каретки.
+# Убираем цветовые коды и возвраты каретки. Под Secure Boot консоль hvc0 не
+# включается (строка ядра из SMBIOS не берётся), поэтому к выводу консоли
+# добавляем журнал гостя, который mkosi переслал на раннер.
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$LOG.raw" >"$LOG"
+if [ -e "$LOG.journal" ]; then
+    echo "===== журнал гостя =====" >>"$LOG"
+    journalctl --file="$LOG.journal" -o short-monotonic --no-pager >>"$LOG" 2>&1 || true
+else
+    echo "::warning::журнал гостя не пришёл ($LOG.journal)"
+fi
 
 fail=0
 err() { echo "::error::$*"; summary "- ❌ $*"; fail=1; }
@@ -117,6 +124,7 @@ if [ -n "$ready_line" ]; then
     fi
     [ "$usr_fs" = "erofs" ] || err "/usr не на erofs"
     [ "$(field USR_VERITY)" = yes ] || err "/usr не под dm-verity"
+    [ "$(field SECURE_BOOT)" = 1 ] || err "Secure Boot не включён (SECURE_BOOT=$(field SECURE_BOOT))"
     [ "$(field BOOT_COUNT)" = "засчитана" ] || err "загрузка не засчитана (systemd-bless-boot)"
 fi
 

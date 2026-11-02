@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       sabotage:
-        description: "Проверка теста (no-kernel, emergency, corrupt-usr — ожидается красный) или разведка usr-only (образ без root)"
+        description: "Проверка теста (no-kernel, emergency, corrupt-usr, unsigned — ожидается красный) или разведка usr-only (образ без root)"
         type: choice
         default: none
-        options: [none, no-kernel, emergency, usr-only, corrupt-usr]
+        options: [none, no-kernel, emergency, usr-only, corrupt-usr, unsigned]
 
 permissions:
   contents: read
@@ -86,6 +86,9 @@ jobs:
           if [ "$SABOTAGE" = no-kernel ]; then
             echo "::warning::Собираем образ без ядра — проверка, что тест станет красным"
             extra="--bootable=no"
+          elif [ "$SABOTAGE" = unsigned ]; then
+            echo "::warning::Собираем образ без подписи Secure Boot — прошивка не должна его запустить"
+            extra="--secure-boot=no"
           elif [ "$SABOTAGE" = usr-only ]; then
             echo "::warning::Разведка: образ без root (ESP + /usr), корень — tmpfs"
             extra="--profile=usr-only"
@@ -127,8 +130,8 @@ jobs:
           export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
           export EXPECT_VERSION="$DEVUZ_VERSION"
           case "$SABOTAGE" in
-            no-kernel) export TEST_TIMEOUT=300 ;;
-            emergency) export EXTRA_CMDLINE="systemd.unit=emergency.target" TEST_TIMEOUT=300 ;;
+            no-kernel|unsigned) export TEST_TIMEOUT=300 ;;
+            emergency) export TEST_CRED=emergency TEST_TIMEOUT=300 ;;
             usr-only) export MKOSI_ARGS="$MKOSI_ARGS --profile=usr-only" TEST_TIMEOUT=300 ;;
             corrupt-usr)
               echo "::warning::Портим /usr в готовом образе — dm-verity должна не дать загрузиться"
@@ -262,5 +265,6 @@ jobs:
             boot.log
             update.log
             rollback.log
+            *.journal
           if-no-files-found: warn
           retention-days: 7
