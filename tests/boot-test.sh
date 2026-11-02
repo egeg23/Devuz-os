@@ -96,6 +96,12 @@ fi
 if [ -n "$systemd" ]; then
     systemd-analyze compare-versions "$systemd" ge "$MIN_SYSTEMD" ||
         err "systemd $systemd старше $MIN_SYSTEMD"
+elif [ -n "$ready_line" ]; then
+    err "не удалось прочитать версию systemd"
+fi
+if grep -qE 'command not found' "$LOG"; then
+    err "в образе не хватает программ:"
+    grep -E 'command not found' "$LOG" | sed 's/^/    /'
 fi
 if [ -n "$ready_line" ]; then
     [ "$image_id" = "devuz" ] || err "IMAGE_ID=«$image_id», ожидался devuz"

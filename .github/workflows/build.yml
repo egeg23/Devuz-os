@@ -20,7 +20,8 @@ permissions:
   actions: read   # чтобы скачать манифест последней сборки main для сравнения
 
 concurrency:
-  group: build-${{ github.ref }}
+  # Ручные прогоны (проверка теста, разведка) не отменяют друг друга.
+  group: build-${{ github.ref }}-${{ inputs.sabotage || 'none' }}
   cancel-in-progress: true
 
 jobs:
@@ -65,17 +66,6 @@ jobs:
           echo "DEVUZ_BUILD_ID=$(echo '${{ github.event.pull_request.head.sha || github.sha }}' | cut -c1-12)" >>"$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
           echo "DEVUZ_VERSION=$(./mkosi.version)" >>"$GITHUB_ENV"
-          echo "DAY=$(date -u +%Y-%m-%d)" >>"$GITHUB_ENV"
-
-      - name: Кэш mkosi
-        uses: actions/cache@v4
-        with:
-          path: /mnt/devuz/cache
-          # Новый кэш каждый день: Incremental не замечает обновлений в
-          # репозиториях Debian (в т.ч. нового ядра в backports).
-          key: mkosi-${{ env.DAY }}-${{ hashFiles('mkosi.conf', 'mkosi.sandbox/**') }}
-          restore-keys: |
-            mkosi-${{ env.DAY }}-
 
       - name: Конфигурация
         run: mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" summary
@@ -146,8 +136,6 @@ jobs:
             echo "Манифест сборки main не скачался." >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          old=$(find prev -name '*.changelog' | head -n1)
-          new=$(find "$WORK/output" -name '*.changelog' | head -n1)
           old_pkgs=$(mktemp); new_pkgs=$(mktemp)
           python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
             "$(find prev -name '*.manifest' | head -n1)" | sort >"$old_pkgs" || true
@@ -158,7 +146,6 @@ jobs:
             diff -u "$old_pkgs" "$new_pkgs" | tail -n +3 || true
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
-          echo "(changelog: старый ${old:-нет}, новый ${new:-нет})"
 
       - name: Артефакт — образ
         if: env.SABOTAGE == 'none'
@@ -189,7 +176,6 @@ jobs:
           name: devuz-manifest-${{ env.DEVUZ_VERSION }}
           path: |
             /mnt/devuz/output/*.manifest
-            /mnt/devuz/output/*.changelog
             boot.log
           if-no-files-found: warn
           retention-days: 7
