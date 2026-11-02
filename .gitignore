@@ -16,3 +16,5 @@ mkosi.local.conf
 *.efi
 *.zst
 *.xz
+mkosi.packages/
+__pycache__/

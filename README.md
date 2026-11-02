@@ -32,8 +32,12 @@
 ```sh
 git clone https://github.com/egeg23/devuz-os
 cd devuz-os
+tools/prepare-packages.sh   # ядро из Release по kernel.lock + пакет без dracut
 mkosi -f build
 ```
+
+Без `gh` (GitHub CLI) скрипт возьмёт ядро из `trixie-backports` — какое там
+есть сейчас; точная версия образа из Actions записана в `kernel.lock`.
 
 Результат — в `mkosi.output/`: образ диска `devuz_<версия>.raw`, отдельно
 UKI (`.efi`), разделы и манифест пакетов. Первая сборка долгая: mkosi
