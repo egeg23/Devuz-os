@@ -8,8 +8,13 @@ say() { echo "DEVUZ-SELFTEST $*"; }
 
 say "BEGIN"
 say "KERNEL $(uname -r)"
-say "SYSTEMD $(systemctl --version | head -n1 | awk '{print $2}')"
-say "SYSTEMD_FULL $(systemctl --version | head -n1)"
+# Без awk и других программ из /etc/alternatives: самопроверка должна
+# работать и на образе с пустым /etc (разведка недели 1 показала, что
+# там нет даже awk).
+sd_line=$(systemctl --version | head -n1)
+set -- $sd_line
+say "SYSTEMD ${2:-}"
+say "SYSTEMD_FULL $sd_line"
 
 . /usr/lib/os-release
 say "IMAGE_ID ${IMAGE_ID:-}"
@@ -25,12 +30,25 @@ say "USR_FS ${usr_fs}"
 [ "$usr_fs" = "erofs" ] || { say "ERROR /usr is not erofs"; fail=1; }
 echo "--- разделы ---"
 lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,PARTLABEL,MOUNTPOINTS || true
+echo "--- /etc (что есть на верхнем уровне) ---"
+echo $(ls -A /etc)
+echo "--- системные пользователи ---"
+for u in root messagebus systemd-network systemd-resolve; do
+    if getent passwd "$u" >/dev/null; then say "USER $u есть"; else say "USER $u НЕТ"; fi
+done
 echo "--- включённые юниты ---"
-systemctl list-unit-files --state=enabled --no-pager --no-legend
+systemctl list-unit-files --state=enabled --no-pager --no-legend || { say "ERROR list-unit-files"; fail=1; }
 echo "--- время загрузки ---"
 systemd-analyze time --no-pager || true
 echo "--- упавшие юниты ---"
-failed=$(systemctl list-units --state=failed --no-legend --plain --no-pager | awk '{print $1}')
+if ! failed_raw=$(systemctl list-units --state=failed --no-legend --plain --no-pager); then
+    say "ERROR не удалось получить список упавших юнитов"
+    fail=1
+fi
+failed=""
+while read -r unit _; do
+    [ -n "$unit" ] && failed="$failed $unit"
+done <<<"$failed_raw"
 if [ -n "$failed" ]; then
     for u in $failed; do
         say "FAILED_UNIT $u"
