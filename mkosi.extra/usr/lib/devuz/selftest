@@ -45,6 +45,10 @@ case " $(cat /proc/cmdline) " in
     *" usrhash="*) say "USRHASH есть в строке ядра" ;;
     *) say "ERROR нет usrhash= в строке ядра"; fail=1 ;;
 esac
+# Secure Boot: последний байт переменной SecureBoot (1 — включён).
+sb_var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+sb=$( [ -r "$sb_var" ] && tail -c1 "$sb_var" | od -An -tu1 | tr -d ' ' )
+say "SECURE_BOOT ${sb:-нет}"
 echo "--- счёт загрузок ---"
 # systemd-boot передаёт путь к UKI со счётчиком; systemd-bless-boot после
 # boot-complete.target переименовывает файл, убирая «+N-M».

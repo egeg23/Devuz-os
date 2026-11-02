@@ -7,7 +7,6 @@
 #
 # Переменные:
 #   TEST_TIMEOUT   — сколько секунд ждать (по умолчанию 900);
-#   EXTRA_CMDLINE  — добавить в строку ядра (только ручная проверка emergency);
 #   MKOSI_ARGS     — дополнительные опции mkosi (каталоги вывода и т.п.);
 #   EXPECT_VERSION — ожидаемая версия образа (если задана);
 #   TEST_CRED      — значение учётных данных devuz.test (по умолчанию
@@ -34,7 +33,6 @@ timeout --foreground "$TEST_TIMEOUT" \
         --ephemeral=yes \
         --console=native \
         --credential="devuz.test=${TEST_CRED:-selftest}" \
-        ${EXTRA_CMDLINE:+--kernel-command-line-extra="$EXTRA_CMDLINE"} \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
     now=${EPOCHREALTIME/[.,]/}
@@ -43,7 +41,10 @@ while IFS= read -r line; do
 done | tee "$LOG.raw"
 rc=${PIPESTATUS[0]}
 
-# Убираем цветовые коды и возвраты каретки.
+# Убираем цветовые коды и возвраты каретки. (Пересылка журнала гостя через
+# --forward-journal в mkosi v27.1 не работает: systemd-journal-remote из tools
+# tree падает с «Unknown socket passed on fd:4», и гость висит на
+# systemd-journal-flush. Читаем консоль hvc0.)
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$LOG.raw" >"$LOG"
 
 fail=0
@@ -117,6 +118,7 @@ if [ -n "$ready_line" ]; then
     fi
     [ "$usr_fs" = "erofs" ] || err "/usr не на erofs"
     [ "$(field USR_VERITY)" = yes ] || err "/usr не под dm-verity"
+    [ "$(field SECURE_BOOT)" = 1 ] || err "Secure Boot не включён (SECURE_BOOT=$(field SECURE_BOOT))"
     [ "$(field BOOT_COUNT)" = "засчитана" ] || err "загрузка не засчитана (systemd-bless-boot)"
 fi
 
