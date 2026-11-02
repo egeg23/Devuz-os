@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: самопроверка образа
+Documentation=https://github.com/egeg23/devuz-os
+# Запускается только по строке ядра systemd.wants=devuz-selftest.service
+# (в тесте её передаёт mkosi vm). В обычной загрузке не включена.
+After=devuz-ready.service
+Wants=devuz-ready.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/selftest
+StandardOutput=journal+console
+StandardError=journal+console

@@ -1,0 +1,7 @@
+# Что включено в DevUz OS по умолчанию.
+enable systemd-networkd.service
+enable systemd-networkd.socket
+enable systemd-resolved.service
+enable devuz-ready.service
+# Самопроверка включается только строкой ядра systemd.wants=devuz-selftest.service.
+disable devuz-selftest.service

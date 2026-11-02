@@ -1,0 +1,49 @@
+#!/bin/bash
+# Самопроверка: печатает версии и состояние, пишет DEVUZ-SELFTEST OK
+# (или FAIL) и выключает машину. Тест в Actions читает эти строки.
+set -u
+
+fail=0
+say() { echo "DEVUZ-SELFTEST $*"; }
+
+say "BEGIN"
+say "KERNEL $(uname -r)"
+say "SYSTEMD $(systemctl --version | head -n1 | awk '{print $2}')"
+say "SYSTEMD_FULL $(systemctl --version | head -n1)"
+
+. /usr/lib/os-release
+say "IMAGE_ID ${IMAGE_ID:-}"
+say "IMAGE_VERSION ${IMAGE_VERSION:-}"
+say "BUILD_ID ${BUILD_ID:-}"
+say "PRETTY_NAME ${PRETTY_NAME:-}"
+echo "--- os-release ---"
+cat /usr/lib/os-release
+echo "--- /usr ---"
+findmnt -n -o SOURCE,FSTYPE,OPTIONS /usr || fail=1
+usr_fs=$(findmnt -n -o FSTYPE /usr || true)
+say "USR_FS ${usr_fs}"
+[ "$usr_fs" = "erofs" ] || { say "ERROR /usr is not erofs"; fail=1; }
+echo "--- разделы ---"
+lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,PARTLABEL,MOUNTPOINTS || true
+echo "--- включённые юниты ---"
+systemctl list-unit-files --state=enabled --no-pager --no-legend
+echo "--- время загрузки ---"
+systemd-analyze time --no-pager || true
+echo "--- упавшие юниты ---"
+failed=$(systemctl list-units --state=failed --no-legend --plain --no-pager | awk '{print $1}')
+if [ -n "$failed" ]; then
+    for u in $failed; do
+        say "FAILED_UNIT $u"
+        journalctl -b -u "$u" --no-pager -n 30 || true
+    done
+    fail=1
+fi
+systemctl is-active --quiet devuz-ready.service || { say "ERROR devuz-ready не активна"; fail=1; }
+
+if [ "$fail" -eq 0 ]; then
+    say "OK"
+else
+    say "FAIL"
+fi
+
+systemctl poweroff --no-block

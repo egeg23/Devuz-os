@@ -1,0 +1,191 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Сборка образа DevUz OS и тест загрузки в QEMU.
+# Версия mkosi — v27.1 (та же, что в README). Меняем в обоих местах сразу.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: "Проверка самого теста: собрать заведомо сломанный образ (ожидается красный)"
+        type: choice
+        default: none
+        options: [none, no-kernel, emergency]
+
+permissions:
+  contents: read
+  actions: read   # чтобы скачать манифест последней сборки main для сравнения
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SABOTAGE: ${{ inputs.sabotage || 'none' }}
+      WORK: /mnt/devuz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Место на диске и рабочие каталоги
+        run: |
+          df -h / /mnt || true
+          # На / у раннера мало места, на /mnt — больше: туда кэш, вывод и
+          # временные файлы mkosi.
+          sudo mkdir -p "$WORK"
+          sudo chown "$(id -u):$(id -g)" "$WORK"
+          mkdir -p "$WORK"/{cache,output,workspace}
+          echo "MKOSI_DIRS=--cache-directory=$WORK/cache --output-directory=$WORK/output --workspace-directory=$WORK/workspace" >>"$GITHUB_ENV"
+
+      - name: Установить mkosi v27.1
+        uses: systemd/mkosi@v27.1
+
+      - name: Свежий debian-archive-keyring
+        run: |
+          # В Ubuntu 24.04 keyring старый, без ключей trixie. Берём последний
+          # из архива Debian и ставим поверх.
+          pool=http://deb.debian.org/debian/pool/main/d/debian-archive-keyring/
+          deb=$(curl -fsSL "$pool" | grep -oE 'debian-archive-keyring_[0-9][0-9.]*_all\.deb' | sort -uV | tail -n1)
+          echo "Берём $deb"
+          curl -fsSLO "$pool$deb"
+          sudo dpkg -i "$deb"
+          dpkg-query -W debian-archive-keyring
+          ls -l /usr/share/keyrings/ | grep -i debian
+          test -e /usr/share/keyrings/debian-archive-keyring.gpg || {
+            echo "::error::нет /usr/share/keyrings/debian-archive-keyring.gpg"; exit 1; }
+
+      - name: Версия, хеш коммита, время коммита
+        run: |
+          echo "DEVUZ_BUILD_ID=$(echo '${{ github.event.pull_request.head.sha || github.sha }}' | cut -c1-12)" >>"$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
+          echo "DEVUZ_VERSION=$(./mkosi.version)" >>"$GITHUB_ENV"
+          echo "DAY=$(date -u +%Y-%m-%d)" >>"$GITHUB_ENV"
+
+      - name: Кэш mkosi
+        uses: actions/cache@v4
+        with:
+          path: /mnt/devuz/cache
+          # Новый кэш каждый день: Incremental не замечает обновлений в
+          # репозиториях Debian (в т.ч. нового ядра в backports).
+          key: mkosi-${{ env.DAY }}-${{ hashFiles('mkosi.conf', 'mkosi.sandbox/**') }}
+          restore-keys: |
+            mkosi-${{ env.DAY }}-
+
+      - name: Конфигурация
+        run: mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" summary
+
+      - name: Сборка
+        run: |
+          extra=""
+          if [ "$SABOTAGE" = no-kernel ]; then
+            echo "::warning::Собираем образ без ядра — проверка, что тест станет красным"
+            extra="--bootable=no"
+          fi
+          start=$(date +%s)
+          mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" $extra -f build
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >>"$GITHUB_ENV"
+          ls -la "$WORK/output"
+
+      - name: Проверка разметки
+        if: env.SABOTAGE == 'none'
+        run: |
+          echo "## Разметка" >>"$GITHUB_STEP_SUMMARY"
+          python3 tests/check-partitions.py "$WORK/output/devuz_$DEVUZ_VERSION.raw" "$DEVUZ_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Тест загрузки (до сжатия)
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export EXPECT_VERSION="$DEVUZ_VERSION"
+          case "$SABOTAGE" in
+            no-kernel) export TEST_TIMEOUT=300 ;;
+            emergency) export EXTRA_CMDLINE="systemd.unit=emergency.target" TEST_TIMEOUT=300 ;;
+          esac
+          tests/boot-test.sh
+
+      - name: Сжатие и размеры
+        if: env.SABOTAGE == 'none'
+        run: |
+          cd "$WORK/output"
+          {
+            echo "## Размеры"
+            echo "Сборка шла ${BUILD_SECONDS} с."
+            echo '```'
+            ls -la --block-size=K | grep -v '^total'
+          } >>"$GITHUB_STEP_SUMMARY"
+          for f in *.raw; do zstd -q -T0 -10 --rm "$f"; done
+          {
+            echo "--- после сжатия ---"
+            ls -la --block-size=K *.zst
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Разница пакетов с последней сборкой main
+        if: github.event_name == 'pull_request' && env.SABOTAGE == 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow build.yml --branch main \
+                   --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          echo "## Пакеты: разница с main" >>"$GITHUB_STEP_SUMMARY"
+          if [ -z "$run_id" ]; then
+            echo "Зелёной сборки main ещё нет — сравнивать не с чем." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p prev
+          if ! gh run download "$run_id" -R "$GITHUB_REPOSITORY" --pattern 'devuz-manifest-*' --dir prev; then
+            echo "Манифест сборки main не скачался." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          old=$(find prev -name '*.changelog' | head -n1)
+          new=$(find "$WORK/output" -name '*.changelog' | head -n1)
+          old_pkgs=$(mktemp); new_pkgs=$(mktemp)
+          python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
+            "$(find prev -name '*.manifest' | head -n1)" | sort >"$old_pkgs" || true
+          python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
+            "$(find "$WORK/output" -name '*.manifest' | head -n1)" | sort >"$new_pkgs" || true
+          {
+            echo '```diff'
+            diff -u "$old_pkgs" "$new_pkgs" | tail -n +3 || true
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "(changelog: старый ${old:-нет}, новый ${new:-нет})"
+
+      - name: Артефакт — образ
+        if: env.SABOTAGE == 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: devuz-image-${{ env.DEVUZ_VERSION }}
+          path: |
+            /mnt/devuz/output/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+          compression-level: 0
+          retention-days: 7
+
+      - name: Артефакт — UKI и разделы
+        if: env.SABOTAGE == 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: devuz-parts-${{ env.DEVUZ_VERSION }}
+          path: |
+            /mnt/devuz/output/*.efi
+            /mnt/devuz/output/*.raw.zst
+            !/mnt/devuz/output/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+          compression-level: 0
+          retention-days: 7
+
+      - name: Артефакт — манифест и журнал загрузки
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devuz-manifest-${{ env.DEVUZ_VERSION }}
+          path: |
+            /mnt/devuz/output/*.manifest
+            /mnt/devuz/output/*.changelog
+            boot.log
+          if-no-files-found: warn
+          retention-days: 7
