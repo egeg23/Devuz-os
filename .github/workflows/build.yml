@@ -137,6 +137,55 @@ jobs:
           esac
           tests/boot-test.sh
 
+      - name: Тест обновления A→B (systemd-sysupdate)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Вторая версия того же коммита: V.1. Собираем в свой каталог, кэш
+          # общий — пакеты второй раз не качаются.
+          next="$DEVUZ_VERSION.1"
+          mkdir -p "$WORK/output-next" "$WORK/serve-next"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-next" \
+                --workspace-directory="$WORK/workspace" --image-version="$next" -f build
+          python3 tests/publish-update.py "$WORK/output-next" "$next" "$WORK/serve-next"
+          python3 -m http.server 8080 --directory "$WORK/serve-next" >"$WORK/http-next.log" 2>&1 &
+          # Запускаем образ V; служба теста ставит V.1 и перезагружается в неё.
+          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export TEST_UNIT=devuz-update-test.service
+          export EXTRA_CMDLINE="devuz.update_url=http://10.0.2.2:8080/ devuz.update_expect=$next"
+          export EXPECT_VERSION="$next" LOG=update.log TEST_TIMEOUT=900
+          export TEST_TITLE="Тест обновления A→B"
+          rc=0; tests/boot-test.sh || rc=$?
+          grep -q 'DEVUZ-UPDATE INSTALLED' update.log || { echo "::error::sysupdate не поставил обновление"; rc=1; }
+          echo "- запросы к серверу обновлений:" >>"$GITHUB_STEP_SUMMARY"
+          sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Тест отката (битое обновление → 3 попытки → старая версия)
+        if: env.SABOTAGE == 'none'
+        run: |
+          bad="$DEVUZ_VERSION.2"
+          mkdir -p "$WORK/output-bad" "$WORK/serve-bad"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-bad" \
+                --workspace-directory="$WORK/workspace" --image-version="$bad" \
+                --environment=DEVUZ_TEST_BROKEN=1 -f build
+          python3 tests/publish-update.py "$WORK/output-bad" "$bad" "$WORK/serve-bad"
+          python3 -m http.server 8081 --directory "$WORK/serve-bad" >"$WORK/http-bad.log" 2>&1 &
+          # V ставит «битую» V.2; та 3 раза не доходит до готовности,
+          # systemd-boot возвращает V — проверка должна закончиться на V.
+          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export TEST_UNIT=devuz-update-test.service ALLOW_FAILED_START=1
+          export EXTRA_CMDLINE="devuz.update_url=http://10.0.2.2:8081/ devuz.update_expect=$DEVUZ_VERSION"
+          export EXPECT_VERSION="$DEVUZ_VERSION" LOG=rollback.log TEST_TIMEOUT=900
+          export TEST_TITLE="Тест отката"
+          rc=0; tests/boot-test.sh || rc=$?
+          grep -q 'DEVUZ-UPDATE INSTALLED' rollback.log || { echo "::error::sysupdate не поставил «битую» версию"; rc=1; }
+          tries=$(grep -c 'DEVUZ-READY-BROKEN' rollback.log || true)
+          echo "- «битая» $bad не дошла до готовности: $tries раз(а)" >>"$GITHUB_STEP_SUMMARY"
+          [ "$tries" -ge 3 ] || { echo "::error::ожидалось 3 неудачные попытки, было $tries"; rc=1; }
+          grep -qE "UKI: devuz_${bad}\+0-[0-9]+\.efi" rollback.log ||
+            { echo "::error::UKI «битой» версии не помечен как плохой (+0-N)"; rc=1; }
+          exit $rc
+
       - name: Сжатие и размеры
         if: env.SABOTAGE == 'none'
         run: |
@@ -212,5 +261,7 @@ jobs:
           path: |
             /mnt/devuz/output/*.manifest
             boot.log
+            update.log
+            rollback.log
           if-no-files-found: warn
           retention-days: 7

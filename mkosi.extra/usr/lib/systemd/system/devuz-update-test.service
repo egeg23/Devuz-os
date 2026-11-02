@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: тест обновления A/B
+Documentation=https://github.com/egeg23/devuz-os
+# Только для теста в Actions: включается строкой ядра
+# systemd.wants=devuz-update-test.service вместе с devuz.update_url= и
+# devuz.update_expect=. В обычной загрузке не запускается.
+After=devuz-ready.service systemd-bless-boot.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/update-test
+StandardOutput=journal+console
+StandardError=journal+console

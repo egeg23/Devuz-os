@@ -19,3 +19,16 @@ OSR
 # /etc/os-release в Debian — ссылка на /usr/lib/os-release; на всякий
 # случай проверим, что это так и осталось.
 ln -sf ../usr/lib/os-release "$BUILDROOT/etc/os-release"
+
+# Только для теста отката в Actions: «битая» версия, у которой готовность
+# всегда падает. Обычная сборка эту ветку не трогает.
+if [ "${DEVUZ_TEST_BROKEN:-}" = 1 ]; then
+    echo "ВНИМАНИЕ: собираем «битую» версию для теста отката"
+    mkdir -p "$BUILDROOT/usr/lib/systemd/system/devuz-ready.service.d"
+    cat >"$BUILDROOT/usr/lib/systemd/system/devuz-ready.service.d/90-test-broken.conf" <<'CONF'
+[Service]
+ExecStartPre=/bin/echo DEVUZ-READY-BROKEN
+ExecStart=
+ExecStart=/bin/false
+CONF
+fi

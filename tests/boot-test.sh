@@ -9,7 +9,12 @@
 #   TEST_TIMEOUT   — сколько секунд ждать (по умолчанию 900);
 #   EXTRA_CMDLINE  — добавить в строку ядра (для проверки «сломанного» образа);
 #   MKOSI_ARGS     — дополнительные опции mkosi (каталоги вывода и т.п.);
-#   EXPECT_VERSION — ожидаемая версия образа (если задана).
+#   EXPECT_VERSION — ожидаемая версия образа (если задана);
+#   TEST_UNIT      — какую службу запустить строкой ядра (по умолчанию
+#                    devuz-selftest.service; для теста обновления —
+#                    devuz-update-test.service);
+#   ALLOW_FAILED_START=1 — не считать ошибкой «Failed to start» (тест отката:
+#                    «битая» версия падает нарочно).
 set -uo pipefail
 
 TEST_TIMEOUT="${TEST_TIMEOUT:-900}"
@@ -29,7 +34,7 @@ timeout --foreground "$TEST_TIMEOUT" \
     mkosi ${MKOSI_ARGS:-} \
         --ephemeral=yes \
         --console=native \
-        --kernel-command-line-extra="systemd.wants=devuz-selftest.service ${EXTRA_CMDLINE:-}" \
+        --kernel-command-line-extra="systemd.wants=${TEST_UNIT:-devuz-selftest.service} ${EXTRA_CMDLINE:-}" \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
     now=${EPOCHREALTIME/[.,]/}
@@ -44,7 +49,7 @@ sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$LOG.raw" >"$LOG"
 fail=0
 err() { echo "::error::$*"; summary "- ❌ $*"; fail=1; }
 
-summary "## Тест загрузки"
+summary "## ${TEST_TITLE:-Тест загрузки}"
 if [ "$rc" -eq 124 ]; then
     err "таймаут ${TEST_TIMEOUT} с: машина не дошла до конца самопроверки"
 elif [ "$rc" -ne 0 ]; then
@@ -54,7 +59,7 @@ fi
 if grep -qiE 'emergency mode|Reached target .*Emergency|emergency\.target' "$LOG"; then
     err "система ушла в аварийный режим (emergency)"
 fi
-if grep -qE 'Failed to start' "$LOG"; then
+if [ "${ALLOW_FAILED_START:-}" != 1 ] && grep -qE 'Failed to start' "$LOG"; then
     err "при загрузке не запустились службы:"
     grep -E 'Failed to start' "$LOG" | sed 's/^/    /'
 fi
@@ -105,7 +110,7 @@ if grep -qE 'command not found' "$LOG"; then
 fi
 if [ -n "$ready_line" ]; then
     [ "$image_id" = "devuz" ] || err "IMAGE_ID=«$image_id», ожидался devuz"
-    echo "$image_version" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$' ||
+    echo "$image_version" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(\.[0-9]+)?$' ||
         err "IMAGE_VERSION=«$image_version» не в формате ГГГГ.ММ.ДД.N"
     if [ -n "${EXPECT_VERSION:-}" ] && [ "$image_version" != "$EXPECT_VERSION" ]; then
         err "IMAGE_VERSION=«$image_version», ожидалась $EXPECT_VERSION"

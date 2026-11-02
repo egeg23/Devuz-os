@@ -55,7 +55,11 @@ ls -1 "$uki_dir" 2>/dev/null | sed 's/^/  UKI: /'
 bless=$(systemctl show -p ActiveState --value systemd-bless-boot.service 2>/dev/null)
 bless_result=$(systemctl show -p Result --value systemd-bless-boot.service 2>/dev/null)
 say "BLESS ${bless:-нет}/${bless_result:-нет}"
-if [ -e "$uki_dir/devuz_${IMAGE_VERSION:-}.efi" ] && ! ls "$uki_dir" | grep -q '+'; then
+# Проверяем только UKI текущей версии: рядом может законно лежать «плохая»
+# версия со счётчиком +0-3 (после отката).
+counted=no
+for f in "$uki_dir/devuz_${IMAGE_VERSION:-}+"*.efi; do [ -e "$f" ] && counted=yes; done
+if [ -e "$uki_dir/devuz_${IMAGE_VERSION:-}.efi" ] && [ "$counted" = no ]; then
     say "BOOT_COUNT засчитана"
 else
     say "ERROR загрузка не засчитана: в $uki_dir нет devuz_${IMAGE_VERSION:-}.efi без счётчика"
