@@ -4,7 +4,7 @@ Description=DevUz: самопроверка образа
 Documentation=https://github.com/egeg23/devuz-os
 # Запускается только по строке ядра systemd.wants=devuz-selftest.service
 # (в тесте её передаёт mkosi vm). В обычной загрузке не включена.
-After=devuz-ready.service
+After=devuz-ready.service systemd-bless-boot.service
 Wants=devuz-ready.service
 
 [Service]

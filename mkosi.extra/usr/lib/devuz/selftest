@@ -45,6 +45,22 @@ case " $(cat /proc/cmdline) " in
     *" usrhash="*) say "USRHASH есть в строке ядра" ;;
     *) say "ERROR нет usrhash= в строке ядра"; fail=1 ;;
 esac
+echo "--- счёт загрузок ---"
+# systemd-boot передаёт путь к UKI со счётчиком; systemd-bless-boot после
+# boot-complete.target переименовывает файл, убирая «+N-M».
+bootctl status --no-pager 2>/dev/null | grep -iE "boot count|current entry|Booted" || true
+uki_dir=/boot/EFI/Linux
+[ -d "$uki_dir" ] || uki_dir=/efi/EFI/Linux
+ls -1 "$uki_dir" 2>/dev/null | sed 's/^/  UKI: /'
+bless=$(systemctl show -p ActiveState --value systemd-bless-boot.service 2>/dev/null)
+bless_result=$(systemctl show -p Result --value systemd-bless-boot.service 2>/dev/null)
+say "BLESS ${bless:-нет}/${bless_result:-нет}"
+if [ -e "$uki_dir/devuz_${IMAGE_VERSION:-}.efi" ] && ! ls "$uki_dir" | grep -q '+'; then
+    say "BOOT_COUNT засчитана"
+else
+    say "ERROR загрузка не засчитана: в $uki_dir нет devuz_${IMAGE_VERSION:-}.efi без счётчика"
+    fail=1
+fi
 echo "--- разделы ---"
 lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,PARTLABEL,MOUNTPOINTS || true
 echo "--- /etc (что есть на верхнем уровне) ---"
