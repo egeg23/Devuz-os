@@ -23,7 +23,7 @@
 - `/usr` под dm-verity: `usrhash=` в UKI, systemd находит разделы по UUID из хеша.
 - UKI: `devuz_<версия>+3.efi` (3 попытки); `systemd-bless-boot` засчитывает после `devuz-ready.service`; `FailureAction=reboot`.
 - Обновления: `/usr/lib/sysupdate.d/*.transfer`, адрес-заглушка `updates.devuz.invalid`; тест подменяет его через `/etc/sysupdate.d`. Подпись `SHA256SUMS.gpg` проверяется (`gpg` в образе, открытый ключ в `/usr/lib/systemd/import-pubring.gpg`; в Actions тестовый GPG-ключ на лету, в образ — через `--extra-tree`).
-- Тесты включаются учётными данными `devuz.test` (через SMBIOS, `mkosi vm --credential=`): `devuz-test.service` с `ConditionCredential=`; значения `selftest` или `update,<адрес>,<версия>`. Строку ядра для тестов не используем (под Secure Boot она из SMBIOS не берётся).
+- Два образа из одних рецептов. **Боевой** (без профиля) — артефакт и коробки: тестовых служб нет, в UKI `systemd.import_credentials=no` (учётные данные systemd не принимаются ни с ESP, ни из SMBIOS). **Тестовый** (`--profile=test`, `mkosi.profiles/test/`) — на нём все тесты загрузки: `devuz-test.service` с `ConditionCredential=devuz.test` (через SMBIOS, `mkosi vm --credential=`), значения `selftest`, `update,http://10.0.2.2:<порт>/,<версия>` (другие адреса отклоняются), `emergency`. Workflow проверяет, что боевой образ без тестового.
 - Ручные режимы `build.yml` (`sabotage`): `no-kernel`, `emergency`, `corrupt-usr`, `unsigned` (должны быть красными).
 - Ключи: тестовые генерируются в Actions на лету (`mkosi genkey`), в репозитории ключей нет никогда.
 - Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`).
@@ -40,7 +40,8 @@
 - В версиях есть точки: имена UKI сравнивать без регулярных выражений.
 - mkosi v27.1: `--forward-journal` не работает (`systemd-journal-remote` из tools tree: «Unknown socket passed on fd:4», гость висит на `systemd-journal-flush`) → читаем консоль hvc0.
 - mkosi v27.1 + `FirmwareVariables=custom` + tools tree: файл `OVMF_VARS_4M.fd` ищется на раннере, а не в tools tree → в workflow ставим `ovmf` на раннер.
-- Под Secure Boot systemd-stub не берёт строку ядра из SMBIOS → нужен другой способ включать самопроверку (неделя 3).
+- systemd-stub 257 дописывает к строке ядра `io.systemd.stub.kernel-cmdline-extra` из SMBIOS и под Secure Boot (отказ только в confidential VM): кто управляет SMBIOS (прошивка, гипервизор), может дописать и `usrhash=`. От того, у кого в руках диск, это не открыто (ESP не влияет на строку ядра подписанного UKI). Прежняя запись «под SB не берёт» была неверной (аудит недели 3).
+- systemd-stub берёт `*.cred` с ESP (`/loader/credentials/`, `<UKI>.extra.d/`) без проверки подписи, а PID1 их импортирует → через `tmpfiles.extra` и т. п. — код от root. Закрыто `systemd.import_credentials=no` в боевом UKI; тестовые механизмы — только в профиле test (аудит недели 3).
 
 ## Решения владельца
 
@@ -52,4 +53,7 @@
 
 - Ограничить `FailureAction=reboot`, чтобы не перезагружаться по кругу, если плохи обе версии (неделя 8, «Состояние»).
 - Домен или IP + порт для сервера обновлений.
+- `/etc` из заготовки копируется только при первой загрузке: новые файлы `/etc` из следующих версий в уже работающую коробку не придут. Решить до первых обновлений с изменениями `/etc` (вариант — `tmpfiles.d` `C+` для нужных каталогов).
+- Ручной режим `sabotage=emergency` краснеет из-за упавшей службы, а не по признаку emergency в журнале — проверить детектор.
+- Диск коробки — от 8 ГБ: при меньшем root не создастся (systemd-repart выходит без ошибки) — добавить понятное сообщение.
 - До недели 5: своё ядро на долгой ветке или идём за backports.
