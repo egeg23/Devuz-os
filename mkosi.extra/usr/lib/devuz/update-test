@@ -55,9 +55,9 @@ for f in /usr/lib/sysupdate.d/*.transfer; do
 done
 
 say "LIST"
-/usr/lib/systemd/systemd-sysupdate --verify=no list || true
+/usr/lib/systemd/systemd-sysupdate list || true
 say "START"
-if /usr/lib/systemd/systemd-sysupdate --verify=no update; then
+if /usr/lib/systemd/systemd-sysupdate update; then
     say "INSTALLED"
     ls -1 "$uki_dir" | sed 's/^/  UKI: /'
     systemctl reboot
