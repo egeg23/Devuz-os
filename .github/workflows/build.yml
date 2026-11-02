@@ -67,6 +67,11 @@ jobs:
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
           echo "DEVUZ_VERSION=$(./mkosi.version)" >>"$GITHUB_ENV"
 
+      - name: Пакеты для сборки (ядро из Release, без dracut)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/prepare-packages.sh
+
       - name: Конфигурация
         run: mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" summary
 
@@ -84,6 +89,27 @@ jobs:
           mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" $extra -f build
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >>"$GITHUB_ENV"
           ls -la "$WORK/output"
+
+      - name: Проверка пакетов
+        if: env.SABOTAGE == 'none' || env.SABOTAGE == 'usr-only'
+        run: |
+          python3 - "$WORK/output/devuz_$DEVUZ_VERSION.manifest" <<'PY'
+          import json, os, sys
+          pkgs = {p["name"]: p["version"] for p in json.load(open(sys.argv[1]))["packages"]}
+          errors = []
+          if "dracut" in pkgs or "dracut-core" in pkgs:
+              errors.append("в образ попал dracut")
+          kernel = pkgs.get("linux-image-amd64", "нет")
+          pinned = os.environ.get("KERNEL_PINNED")
+          if pinned and kernel != pinned:
+              errors.append(f"ядро {kernel}, а в kernel.lock {pinned}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"## Пакеты\n- всего: {len(pkgs)}\n- linux-image-amd64: `{kernel}`"
+                      f" ({'из Release, по kernel.lock' if pinned else 'из backports, Release не найден'})\n")
+          for e in errors:
+              print(f"::error::{e}")
+          sys.exit(1 if errors else 0)
+          PY
 
       - name: Проверка разметки
         if: env.SABOTAGE == 'none'

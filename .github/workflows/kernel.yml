@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Выкладывает .deb ядра из kernel.lock в GitHub Release, чтобы сборка одного
+# коммита не менялась, когда trixie-backports уходят вперёд.
+# Это единственный workflow с правом записи (только contents, только для
+# Release). Он не собирает образ и не запускает чужой код — только скачивает
+# пакеты Debian со сверкой SHA256. На PR он не запускается.
+name: kernel
+
+on:
+  push:
+    branches: [main]
+    paths: [kernel.lock, tools/fetch-kernel-debs.py, .github/workflows/kernel.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kernel
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Выложить ядро в Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./kernel.lock
+          tag="kernel-${KERNEL_VERSION//\~/_}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag уже есть — ничего не делаем."
+            exit 0
+          fi
+          python3 tools/fetch-kernel-debs.py "$KERNEL_VERSION" debs
+          gh release create "$tag" debs/*.deb \
+            --title "Ядро $KERNEL_VERSION" \
+            --notes "Пакеты ядра linux-image-amd64 $KERNEL_VERSION из trixie-backports (deb.debian.org, SHA256 сверены с индексом). Их берёт сборка образа, когда kernel.lock указывает на эту версию."
+          {
+            echo "## Ядро выложено"
+            echo "Release \`$tag\`:"
+            echo '```'
+            ls -la debs/
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
