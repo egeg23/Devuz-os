@@ -111,6 +111,7 @@ if [ -n "$ready_line" ]; then
         err "IMAGE_VERSION=«$image_version», ожидалась $EXPECT_VERSION"
     fi
     [ "$usr_fs" = "erofs" ] || err "/usr не на erofs"
+    [ "$(field USR_VERITY)" = yes ] || err "/usr не под dm-verity"
 fi
 
 if [ "$fail" -eq 0 ]; then

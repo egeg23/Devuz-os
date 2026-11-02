@@ -14,6 +14,8 @@ import sys
 
 ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 USR_X86_64 = "8484680C-9521-48C6-9C11-B0720656F69E"
+USR_VERITY = "77FF5F63-E7B6-4633-ACF4-1565B864C0E6"
+USR_VERITY_SIG = "E7BB33FB-06CF-4E81-8273-E543B413E2E2"
 ROOT_X86_64 = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
 
 
@@ -29,7 +31,11 @@ def main() -> int:
     expected = [
         (ESP, None),
         (USR_X86_64, f"devuz_{version}"),
+        (USR_VERITY, f"devuz_{version}_verity"),
+        (USR_VERITY_SIG, f"devuz_{version}_verity_sig"),
         (USR_X86_64, "_empty"),
+        (USR_VERITY, "_empty"),
+        (USR_VERITY_SIG, "_empty"),
         (ROOT_X86_64, None),
     ]
 
@@ -42,8 +48,10 @@ def main() -> int:
         if ename is not None and name != ename:
             errors.append(f"раздел {i}: ярлык «{name}», ожидался «{ename}»")
 
-    if len(got) >= 3 and got[1][2] != got[2][2]:
-        errors.append(f"слоты /usr разного размера: {got[1][2]} и {got[2][2]}")
+    # Слоты A и B попарно одного размера: usr, usr-verity, usr-verity-sig.
+    for a, b in ((1, 4), (2, 5), (3, 6)):
+        if len(got) > b and got[a][2] != got[b][2]:
+            errors.append(f"слоты A/B разного размера: раздел {a + 1} — {got[a][2]}, раздел {b + 1} — {got[b][2]}")
 
     if errors:
         for e in errors:
