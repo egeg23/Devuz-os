@@ -1,0 +1,9 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Копирует заготовку /usr/share/factory/etc в /etc, не перезаписывая то,
+# что уже есть (systemd к этому моменту мог создать machine-id и ссылки
+# включённых юнитов). Метка /etc/.devuz-factory-etc — «уже сделано».
+set -euo pipefail
+cp -a --update=none /usr/share/factory/etc/. /etc/
+touch /etc/.devuz-factory-etc
+echo "DEVUZ-FACTORY-ETC /etc заполнен из заготовки"

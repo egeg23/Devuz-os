@@ -17,12 +17,13 @@
 - Сборка и все тесты — только GitHub Actions (`build.yml`); критерий готовности — зелёный Actions.
 - Ядро: версия в `kernel.lock`, пакеты в GitHub Release `kernel-<версия>`; выкладывает `kernel.yml` (единственный workflow с правом записи).
 - `tools/prepare-packages.sh` перед сборкой: ядро из Release + пустой пакет `devuz-no-initramfs` (чтобы не ставился dracut).
-- Разметка: ESP, слоты A/B по три раздела (usr, usr-verity, usr-verity-sig), временный root. Ярлык слота `devuz_<версия>`, свободный — `_empty`.
+- Разметка образа: ESP и слоты A/B по три раздела (usr, usr-verity, usr-verity-sig). Ярлык слота `devuz_<версия>`, свободный — `_empty`. Root в образе нет: его создаёт `systemd-repart` в initrd при первой загрузке (`/usr/lib/repart.d/50-root.conf`, пакет `systemd-repart` в initrd через `InitrdPackages=`); в QEMU диск растёт до 8 ГБ (`RuntimeSize=`).
+- `/etc` при первой загрузке: `mkosi.finalize` сохраняет `/etc` сборки в `/usr/share/factory/etc`, `devuz-factory-etc.service` (до firstboot/sysusers/tmpfiles) копирует его в пустой `/etc`, ничего не перезаписывая. Мастер первой загрузки выключен (`systemd.firstboot=no` в UKI).
 - `/usr` под dm-verity: `usrhash=` в UKI, systemd находит разделы по UUID из хеша.
 - UKI: `devuz_<версия>+3.efi` (3 попытки); `systemd-bless-boot` засчитывает после `devuz-ready.service`; `FailureAction=reboot`.
 - Обновления: `/usr/lib/sysupdate.d/*.transfer`, адрес-заглушка `updates.devuz.invalid`; тест подменяет его через `/etc/sysupdate.d`. Подпись `SHA256SUMS.gpg` проверяется (`gpg` в образе, открытый ключ в `/usr/lib/systemd/import-pubring.gpg`; в Actions тестовый GPG-ключ на лету, в образ — через `--extra-tree`).
 - Тесты включаются учётными данными `devuz.test` (через SMBIOS, `mkosi vm --credential=`): `devuz-test.service` с `ConditionCredential=`; значения `selftest` или `update,<адрес>,<версия>`. Строку ядра для тестов не используем (под Secure Boot она из SMBIOS не берётся).
-- Ручные режимы `build.yml` (`sabotage`): `no-kernel`, `emergency`, `corrupt-usr` (должны быть красными), `usr-only` (разведка).
+- Ручные режимы `build.yml` (`sabotage`): `no-kernel`, `emergency`, `corrupt-usr`, `unsigned` (должны быть красными).
 - Ключи: тестовые генерируются в Actions на лету (`mkosi genkey`), в репозитории ключей нет никогда.
 - Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`).
 

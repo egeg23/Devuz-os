@@ -120,6 +120,10 @@ if [ -n "$ready_line" ]; then
     [ "$(field USR_VERITY)" = yes ] || err "/usr не под dm-verity"
     [ "$(field SECURE_BOOT)" = 1 ] || err "Secure Boot не включён (SECURE_BOOT=$(field SECURE_BOOT))"
     [ "$(field BOOT_COUNT)" = "засчитана" ] || err "загрузка не засчитана (systemd-bless-boot)"
+    [ "$(field ROOT_FS)" = ext4 ] || err "root не создан при первой загрузке (ROOT_FS=$(field ROOT_FS))"
+    [ "$(field FACTORY_ETC)" = yes ] || err "/etc не заполнен из заготовки"
+    [ "$(field ALTERNATIVES)" = yes ] || err "нет ссылок /etc/alternatives (awk)"
+    [ "$(field PAM)" = yes ] || err "нет /etc/pam.d"
 fi
 
 if [ "$fail" -eq 0 ]; then

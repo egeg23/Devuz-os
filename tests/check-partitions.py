@@ -4,7 +4,8 @@
 
 Сверяет типы разделов (GUID по спецификации Discoverable Partitions) и
 ярлыки: ESP, /usr версии A с ярлыком devuz_<версия>, пустой слот /usr
-с ярлыком _empty и временный root.
+с ярлыком _empty. Root-раздела в образе нет: он создаётся при первой
+загрузке.
 
 Запуск: check-partitions.py <образ.raw> <версия>
 """
@@ -16,7 +17,6 @@ ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 USR_X86_64 = "8484680C-9521-48C6-9C11-B0720656F69E"
 USR_VERITY = "77FF5F63-E7B6-4633-ACF4-1565B864C0E6"
 USR_VERITY_SIG = "E7BB33FB-06CF-4E81-8273-E543B413E2E2"
-ROOT_X86_64 = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
 
 
 def main() -> int:
@@ -36,7 +36,6 @@ def main() -> int:
         (USR_X86_64, "_empty"),
         (USR_VERITY, "_empty"),
         (USR_VERITY_SIG, "_empty"),
-        (ROOT_X86_64, None),
     ]
 
     errors = []
