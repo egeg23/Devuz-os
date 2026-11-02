@@ -77,7 +77,7 @@ Actions:
 
 ```sh
 mkosi --kernel-command-line-extra=systemd.wants=devuz-selftest.service \
-  --console=read-only vm
+  --console=native vm
 ```
 
 ## Лицензия

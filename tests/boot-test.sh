@@ -1,7 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Тест загрузки: запускает собранный образ в QEMU через `mkosi vm`
-# (одноразовая копия, Ephemeral=yes), ждёт строк DEVUZ-READY и
+# (одноразовая копия, Ephemeral=yes; консоль native — read-only в v27.1
+# требует systemd-pty-forward, а его нет в systemd 257 из trixie), ждёт строк DEVUZ-READY и
 # DEVUZ-SELFTEST OK, проверяет версии.
 #
 # Переменные:
@@ -27,7 +28,7 @@ ready_at=""
 timeout --foreground "$TEST_TIMEOUT" \
     mkosi ${MKOSI_ARGS:-} \
         --ephemeral=yes \
-        --console=read-only \
+        --console=native \
         --kernel-command-line-extra="systemd.wants=devuz-selftest.service ${EXTRA_CMDLINE:-}" \
         vm </dev/null 2>&1 |
 while IFS= read -r line; do
