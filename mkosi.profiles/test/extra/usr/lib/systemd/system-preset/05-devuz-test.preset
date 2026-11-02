@@ -1,0 +1,5 @@
+# Только тестовый образ (профиль test): devuz-test.service срабатывает при
+# учётных данных devuz.test (их передаёт тест в Actions), самопроверку
+# запускает он.
+enable devuz-test.service
+disable devuz-selftest.service

@@ -101,7 +101,7 @@ jobs:
       - name: Конфигурация
         run: mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" summary
 
-      - name: Сборка
+      - name: Сборка тестового образа (профиль test)
         run: |
           extra=""
           if [ "$SABOTAGE" = no-kernel ]; then
@@ -112,14 +112,49 @@ jobs:
             extra="--secure-boot=no"
           fi
           start=$(date +%s)
-          mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" $extra -f build
+          # Тестовый образ: тестовые службы и приём учётных данных
+          # (mkosi.profiles/test/). На нём идут все тесты загрузки.
+          mkosi $MKOSI_DIRS --profile=test --image-version="$DEVUZ_VERSION" $extra -f build
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >>"$GITHUB_ENV"
           ls -la "$WORK/output"
+
+      - name: Сборка боевого образа
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Боевой образ (без профиля) — то, что уходит в артефакты и на
+          # коробки. Отличается от тестового только тестовыми службами и
+          # строкой ядра; проверки ниже — что отличия именно такие.
+          mkdir -p "$WORK/output-prod"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-prod" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --image-version="$DEVUZ_VERSION" -f build
+          ls -la "$WORK/output-prod"
+
+      - name: Проверка боевого образа (нет тестовых служб, учётные данные не принимаются)
+        if: env.SABOTAGE == 'none'
+        run: |
+          rc=0
+          uki="$WORK/output-prod/devuz_$DEVUZ_VERSION.efi"
+          objcopy -O binary --only-section=.cmdline "$uki" "$WORK/prod.cmdline"
+          echo "Строка ядра боевого UKI: $(tr -d '\0' <"$WORK/prod.cmdline")"
+          grep -qw 'systemd.import_credentials=no' "$WORK/prod.cmdline" ||
+            { echo "::error::в боевом UKI нет systemd.import_credentials=no"; rc=1; }
+          for name in devuz-test.service devuz-selftest.service DEVUZ-SELFTEST DEVUZ-UPDATE; do
+            if grep -qaF "$name" "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw"; then
+              echo "::error::в боевом образе есть тестовое: $name"; rc=1
+            fi
+          done
+          # И обратная проверка: тестовый образ правда другой.
+          objcopy -O binary --only-section=.cmdline "$WORK/output/devuz_$DEVUZ_VERSION.efi" "$WORK/test.cmdline"
+          ! grep -qw 'systemd.import_credentials=no' "$WORK/test.cmdline" ||
+            { echo "::error::тестовый UKI не принимает учётные данные — тесты бы не работали"; rc=1; }
+          echo "- боевой образ: тестовых служб нет, \`systemd.import_credentials=no\` в UKI" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
 
       - name: Проверка пакетов
         if: env.SABOTAGE == 'none'
         run: |
-          python3 - "$WORK/output/devuz_$DEVUZ_VERSION.manifest" <<'PY'
+          python3 - "$WORK/output-prod/devuz_$DEVUZ_VERSION.manifest" <<'PY'
           import json, os, sys
           pkgs = {p["name"]: p["version"] for p in json.load(open(sys.argv[1]))["packages"]}
           errors = []
@@ -141,11 +176,11 @@ jobs:
         if: env.SABOTAGE == 'none'
         run: |
           echo "## Разметка" >>"$GITHUB_STEP_SUMMARY"
-          python3 tests/check-partitions.py "$WORK/output/devuz_$DEVUZ_VERSION.raw" "$DEVUZ_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 tests/check-partitions.py "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" "$DEVUZ_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Тест загрузки (до сжатия)
         run: |
-          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export EXPECT_VERSION="$DEVUZ_VERSION"
           case "$SABOTAGE" in
             no-kernel|unsigned) export TEST_TIMEOUT=300 ;;
@@ -166,12 +201,12 @@ jobs:
           mkdir -p "$WORK/output-next" "$WORK/serve-next"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-next" \
                 --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
-                --image-version="$next" -f build
+                --profile=test --image-version="$next" -f build
           python3 tests/publish-update.py "$WORK/output-next" "$next" "$WORK/serve-next"
           gpg --batch --detach-sign --output "$WORK/serve-next/SHA256SUMS.gpg" "$WORK/serve-next/SHA256SUMS"
           python3 -m http.server 8080 --directory "$WORK/serve-next" >"$WORK/http-next.log" 2>&1 &
           # Запускаем образ V; служба теста ставит V.1 и перезагружается в неё.
-          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED="update,http://10.0.2.2:8080/,$next"
           export EXPECT_VERSION="$next" LOG=update.log TEST_TIMEOUT=900
           export TEST_TITLE="Тест обновления A→B"
@@ -193,13 +228,13 @@ jobs:
           mkdir -p "$WORK/output-bad" "$WORK/serve-bad"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-bad" \
                 --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
-                --image-version="$bad" --environment=DEVUZ_TEST_BROKEN=1 -f build
+                --profile=test --image-version="$bad" --environment=DEVUZ_TEST_BROKEN=1 -f build
           python3 tests/publish-update.py "$WORK/output-bad" "$bad" "$WORK/serve-bad"
           gpg --batch --detach-sign --output "$WORK/serve-bad/SHA256SUMS.gpg" "$WORK/serve-bad/SHA256SUMS"
           python3 -m http.server 8081 --directory "$WORK/serve-bad" >"$WORK/http-bad.log" 2>&1 &
           # V ставит «битую» V.2; та 3 раза не доходит до готовности,
           # systemd-boot возвращает V — проверка должна закончиться на V.
-          export MKOSI_ARGS="$MKOSI_DIRS --image-version=$DEVUZ_VERSION"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export ALLOW_FAILED_START=1
           export TEST_CRED="update,http://10.0.2.2:8081/,$DEVUZ_VERSION"
           export EXPECT_VERSION="$DEVUZ_VERSION" LOG=rollback.log TEST_TIMEOUT=900
@@ -216,7 +251,7 @@ jobs:
       - name: Сжатие и размеры
         if: env.SABOTAGE == 'none'
         run: |
-          cd "$WORK/output"
+          cd "$WORK/output-prod"
           {
             echo "## Размеры"
             echo "Сборка шла ${BUILD_SECONDS} с."
@@ -251,7 +286,7 @@ jobs:
           python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
             "$(find prev -name '*.manifest' | head -n1)" | sort >"$old_pkgs" || true
           python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
-            "$(find "$WORK/output" -name '*.manifest' | head -n1)" | sort >"$new_pkgs" || true
+            "$(find "$WORK/output-prod" -name '*.manifest' | head -n1)" | sort >"$new_pkgs" || true
           {
             echo '```diff'
             diff -u "$old_pkgs" "$new_pkgs" | tail -n +3 || true
@@ -264,7 +299,7 @@ jobs:
         with:
           name: devuz-image-${{ env.DEVUZ_VERSION }}
           path: |
-            /mnt/devuz/output/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+            /mnt/devuz/output-prod/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
           compression-level: 0
           retention-days: 7
 
@@ -274,9 +309,9 @@ jobs:
         with:
           name: devuz-parts-${{ env.DEVUZ_VERSION }}
           path: |
-            /mnt/devuz/output/*.efi
-            /mnt/devuz/output/*.raw.zst
-            !/mnt/devuz/output/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+            /mnt/devuz/output-prod/*.efi
+            /mnt/devuz/output-prod/*.raw.zst
+            !/mnt/devuz/output-prod/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
           compression-level: 0
           retention-days: 7
 
@@ -286,7 +321,7 @@ jobs:
         with:
           name: devuz-manifest-${{ env.DEVUZ_VERSION }}
           path: |
-            /mnt/devuz/output/*.manifest
+            /mnt/devuz/output-prod/*.manifest
             boot.log
             update.log
             rollback.log

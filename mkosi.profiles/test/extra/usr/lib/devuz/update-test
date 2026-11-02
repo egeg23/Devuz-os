@@ -47,6 +47,12 @@ if [ -n "$others" ]; then
 fi
 
 [ -n "$url" ] || { say "ERROR не задан адрес сервера (devuz.test=update,<адрес>,<версия>)"; exit 1; }
+# Только тестовый сервер Actions (адрес хоста в сети QEMU user) и только
+# цифры в порту: адрес попадает в transfer-файлы, ничего другого туда
+# вписать нельзя (например, «\nVerify=no»).
+port=${url#http://10.0.2.2:}; port=${port%/}
+case "$port" in ''|*[!0-9]*) say "ERROR адрес не тестовый: $url"; exit 1 ;; esac
+[ "$url" = "http://10.0.2.2:$port/" ] || { say "ERROR адрес не тестовый: $url"; exit 1; }
 
 # Адрес сервера — через /etc/sysupdate.d (перекрывает /usr/lib/sysupdate.d).
 mkdir -p /etc/sysupdate.d

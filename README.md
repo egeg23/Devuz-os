@@ -72,18 +72,30 @@ VirtualBox — «если получится»: перевести образ
 `VBoxManage convertfromraw devuz_<версия>.raw devuz.vdi` и включить EFI
 в настройках машины.
 
-## Самопроверка
+## Тестовый образ и самопроверка
 
-В образ встроена служба `devuz-selftest.service`. Она запускается только
-если в строку ядра добавить `systemd.wants=devuz-selftest.service`:
-печатает версии ядра и systemd, `os-release`, список включённых служб,
-пишет `DEVUZ-SELFTEST OK` и выключает машину. Так образ проверяется в
-Actions:
+Боевой образ не содержит тестовых служб и не принимает учётные данные
+systemd (`systemd.import_credentials=no`). Для проверки собирается
+тестовый образ — профиль `test` (`mkosi.profiles/test/`): в нём служба
+`devuz-test.service`, которая по учётным данным `devuz.test` запускает
+самопроверку или тест обновления. Самопроверка печатает версии, состояние
+`/usr`, root, Secure Boot и TPM, пишет `DEVUZ-SELFTEST OK` и выключает
+машину. Так образ проверяется в Actions:
 
 ```sh
-mkosi --kernel-command-line-extra=systemd.wants=devuz-selftest.service \
-  --console=native vm
+mkosi --profile=test -f build
+mkosi --profile=test --console=native --credential=devuz.test=selftest vm
 ```
+
+Тестовый образ коробкам не ставить.
+
+## Размер диска
+
+Root создаётся при первой загрузке на свободном месте того диска, где
+лежит `/usr`. Сам образ занимает около 5,2 ГБ (ESP 1 ГБ и два слота `/usr`
+по 2 ГБ), root — не меньше 1 ГБ: диск коробки нужен от 8 ГБ. Если места
+нет, root не создастся и система не загрузится. Для запуска в QEMU
+вручную увеличьте файл образа: `truncate -s 16G devuz_<версия>.raw`.
 
 ## Лицензия
 

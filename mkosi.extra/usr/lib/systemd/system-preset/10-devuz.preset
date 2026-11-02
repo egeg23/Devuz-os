@@ -3,10 +3,8 @@ enable systemd-networkd.service
 enable systemd-networkd.socket
 enable systemd-resolved.service
 enable devuz-ready.service
-# Тесты: devuz-test.service включён, но срабатывает только при учётных данных
-# devuz.test (их передаёт тест в Actions); самопроверку запускает он.
-enable devuz-test.service
-disable devuz-selftest.service
+# Тестовых служб в боевом образе нет: они только в профиле test
+# (mkosi.profiles/test/).
 # Политику TPM через systemd-pcrlock не используем: привязка диска к TPM —
 # неделя 3, там и решим как. Сейчас эти службы падают в QEMU (swtpm без
 # AES-128-CFB) и на коробке без настроенной политики ничего не дают.
