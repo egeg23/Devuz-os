@@ -1,8 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Тест обновления A/B (только для Actions). Параметры — из строки ядра:
-#   devuz.update_url=<адрес сервера обновлений>
-#   devuz.update_expect=<версия, которой должна закончиться проверка>
+# Тест обновления A/B (только для Actions). Запускает test-dispatch по
+# учётным данным devuz.test=update,<адрес сервера>,<ожидаемая версия>.
 # Логика: обновление ещё не ставили — ставим через systemd-sysupdate и
 # перезагружаемся. Уже ставили — сверяем версию и запускаем самопроверку.
 # Для теста отката ожидаемая версия — старая: «битая» новая не дойдёт до
@@ -10,13 +9,7 @@
 set -u
 say() { echo "DEVUZ-UPDATE $*"; }
 
-url="" expect=""
-for arg in $(cat /proc/cmdline); do
-    case "$arg" in
-        devuz.update_url=*) url="${arg#*=}" ;;
-        devuz.update_expect=*) expect="${arg#*=}" ;;
-    esac
-done
+url="${1:-}" expect="${2:-}"
 . /usr/lib/os-release
 say "BOOT ${IMAGE_VERSION:-?} (ждём ${expect:-?})"
 
@@ -53,7 +46,7 @@ if [ -n "$others" ]; then
     exit 0
 fi
 
-[ -n "$url" ] || { say "ERROR нет devuz.update_url="; exit 1; }
+[ -n "$url" ] || { say "ERROR не задан адрес сервера (devuz.test=update,<адрес>,<версия>)"; exit 1; }
 
 # Адрес сервера — через /etc/sysupdate.d (перекрывает /usr/lib/sysupdate.d).
 mkdir -p /etc/sysupdate.d

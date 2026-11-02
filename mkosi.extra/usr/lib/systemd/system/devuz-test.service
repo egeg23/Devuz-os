@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: тест в Actions (по учётным данным devuz.test)
+Documentation=https://github.com/egeg23/devuz-os
+# Срабатывает, только если при запуске машине передали учётные данные
+# devuz.test (mkosi vm --credential=devuz.test=..., через SMBIOS). В обычной
+# загрузке их нет — служба пропускается. Строку ядра не используем: под
+# Secure Boot systemd-stub не берёт её из SMBIOS (неделя 3).
+ConditionCredential=devuz.test
+After=devuz-ready.service systemd-bless-boot.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+LoadCredential=devuz.test
+ExecStart=/usr/lib/devuz/test-dispatch
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
