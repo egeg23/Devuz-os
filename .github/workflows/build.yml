@@ -47,6 +47,13 @@ jobs:
       - name: Установить mkosi v27.1
         uses: systemd/mkosi@v27.1
 
+      - name: OVMF на раннере (обход ошибки mkosi v27.1)
+        run: |
+          # При FirmwareVariables=custom mkosi v27.1 ищет OVMF_VARS_4M.fd на самом
+          # раннере, а не в tools tree. Ставим ovmf, чтобы файл был по тому же пути.
+          sudo apt-get install -y --no-install-recommends ovmf
+          ls -l /usr/share/OVMF/OVMF_VARS_4M.fd
+
       - name: Свежий debian-archive-keyring
         run: |
           # В Ubuntu 24.04 keyring старый, без ключей trixie. Берём последний
