@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       sabotage:
-        description: "Проверка теста (no-kernel, emergency — ожидается красный) или разведка usr-only (образ без root)"
+        description: "Проверка теста (no-kernel, emergency, corrupt-usr — ожидается красный) или разведка usr-only (образ без root)"
         type: choice
         default: none
-        options: [none, no-kernel, emergency, usr-only]
+        options: [none, no-kernel, emergency, usr-only, corrupt-usr]
 
 permissions:
   contents: read
@@ -66,6 +66,11 @@ jobs:
           echo "DEVUZ_BUILD_ID=$(echo '${{ github.event.pull_request.head.sha || github.sha }}' | cut -c1-12)" >>"$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
           echo "DEVUZ_VERSION=$(./mkosi.version)" >>"$GITHUB_ENV"
+
+      - name: Тестовый ключ подписи verity (на лету, никуда не сохраняется)
+        run: |
+          mkosi genkey
+          openssl x509 -in mkosi.crt -noout -subject -enddate
 
       - name: Пакеты для сборки (ядро из Release, без dracut)
         env:
@@ -125,6 +130,10 @@ jobs:
             no-kernel) export TEST_TIMEOUT=300 ;;
             emergency) export EXTRA_CMDLINE="systemd.unit=emergency.target" TEST_TIMEOUT=300 ;;
             usr-only) export MKOSI_ARGS="$MKOSI_ARGS --profile=usr-only" TEST_TIMEOUT=300 ;;
+            corrupt-usr)
+              echo "::warning::Портим /usr в готовом образе — dm-verity должна не дать загрузиться"
+              python3 tests/corrupt-usr.py "$WORK/output/devuz_$DEVUZ_VERSION.raw"
+              export TEST_TIMEOUT=300 ;;
           esac
           tests/boot-test.sh
 

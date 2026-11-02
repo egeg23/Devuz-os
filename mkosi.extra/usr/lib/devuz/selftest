@@ -28,6 +28,23 @@ findmnt -n -o SOURCE,FSTYPE,OPTIONS /usr || fail=1
 usr_fs=$(findmnt -n -o FSTYPE /usr || true)
 say "USR_FS ${usr_fs}"
 [ "$usr_fs" = "erofs" ] || { say "ERROR /usr is not erofs"; fail=1; }
+# /usr должен идти через dm-verity: устройство /dev/mapper/usr, у которого
+# в /sys/block/dm-*/dm/uuid стоит префикс CRYPT-VERITY-.
+usr_src=$(findmnt -n -o SOURCE /usr || true)
+usr_verity=no
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] || continue
+    if [ "$(cat "$d/name")" = usr ]; then
+        case "$(cat "$d/uuid")" in CRYPT-VERITY-*) usr_verity=yes ;; esac
+    fi
+done
+say "USR_SOURCE ${usr_src}"
+say "USR_VERITY ${usr_verity}"
+[ "$usr_verity" = yes ] || { say "ERROR /usr не под dm-verity"; fail=1; }
+case " $(cat /proc/cmdline) " in
+    *" usrhash="*) say "USRHASH есть в строке ядра" ;;
+    *) say "ERROR нет usrhash= в строке ядра"; fail=1 ;;
+esac
 echo "--- разделы ---"
 lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,PARTLABEL,MOUNTPOINTS || true
 echo "--- /etc (что есть на верхнем уровне) ---"

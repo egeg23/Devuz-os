@@ -33,6 +33,7 @@
 git clone https://github.com/egeg23/devuz-os
 cd devuz-os
 tools/prepare-packages.sh   # ядро из Release по kernel.lock + пакет без dracut
+mkosi genkey                # свой ключ подписи verity (mkosi.key/mkosi.crt, в git не попадёт)
 mkosi -f build
 ```
 
