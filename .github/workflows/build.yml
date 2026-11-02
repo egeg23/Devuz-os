@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       sabotage:
-        description: "Проверка теста (no-kernel, emergency, corrupt-usr, unsigned — ожидается красный) или разведка usr-only (образ без root)"
+        description: "Проверка теста (no-kernel, emergency, corrupt-usr, unsigned — ожидается красный)"
         type: choice
         default: none
-        options: [none, no-kernel, emergency, usr-only, corrupt-usr, unsigned]
+        options: [none, no-kernel, emergency, corrupt-usr, unsigned]
 
 permissions:
   contents: read
@@ -110,9 +110,6 @@ jobs:
           elif [ "$SABOTAGE" = unsigned ]; then
             echo "::warning::Собираем образ без подписи Secure Boot — прошивка не должна его запустить"
             extra="--secure-boot=no"
-          elif [ "$SABOTAGE" = usr-only ]; then
-            echo "::warning::Разведка: образ без root (ESP + /usr), корень — tmpfs"
-            extra="--profile=usr-only"
           fi
           start=$(date +%s)
           mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" $extra -f build
@@ -120,7 +117,7 @@ jobs:
           ls -la "$WORK/output"
 
       - name: Проверка пакетов
-        if: env.SABOTAGE == 'none' || env.SABOTAGE == 'usr-only'
+        if: env.SABOTAGE == 'none'
         run: |
           python3 - "$WORK/output/devuz_$DEVUZ_VERSION.manifest" <<'PY'
           import json, os, sys
@@ -153,7 +150,6 @@ jobs:
           case "$SABOTAGE" in
             no-kernel|unsigned) export TEST_TIMEOUT=300 ;;
             emergency) export TEST_CRED=emergency TEST_TIMEOUT=300 ;;
-            usr-only) export MKOSI_ARGS="$MKOSI_ARGS --profile=usr-only" TEST_TIMEOUT=300 ;;
             corrupt-usr)
               echo "::warning::Портим /usr в готовом образе — dm-verity должна не дать загрузиться"
               python3 tests/corrupt-usr.py "$WORK/output/devuz_$DEVUZ_VERSION.raw"
