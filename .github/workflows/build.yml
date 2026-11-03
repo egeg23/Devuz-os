@@ -512,7 +512,7 @@ jobs:
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=office EXPECT_VERSION="$DEVUZ_VERSION" LOG=office.log TEST_TITLE="Тест «Офиса»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN FALLBACK; do
+          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN DB FALLBACK; do
             line=$(grep -m1 -o "DEVUZ-OFFICE-TEST $k .*" office.log || true)
             echo "- ${line:-❌ нет DEVUZ-OFFICE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

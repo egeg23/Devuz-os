@@ -29,6 +29,15 @@ if [ "$m" = 600 ] && grep -q '"priority":"live"' /etc/devuz/core/apps.d/office.j
 else
     say "ERROR токен: права $m"; fail=1
 fi
+# База «Офиса»: роль office входит по паролю в свою базу; без пароля и в чужую базу — нет.
+pw=$(cat /etc/devuz/office/db-password 2>/dev/null)
+q() { podman exec -e PGPASSWORD="$1" devuz-postgres psql -h /var/run/postgresql -U office -d "$2" -tAc 'select current_user' 2>&1; }
+ok=$(q "$pw" office); bad=$(q nope office); other=$(q "$pw" postgres)
+if [ "$ok" = office ] && [ "$(stat -c %a /etc/devuz/office/db-password)" = 600 ] && [ "$bad" != office ] && [ "$other" != office ]; then
+    say "DB ok: роль office в своей базе, чужой пароль и чужая база — отказ"
+else
+    say "ERROR база «Офиса»: «$ok» / «$bad» / «$other»"; fail=1
+fi
 systemctl stop devuz-svc-office.service
 body=$(curl -s --cacert "$ca" https://localhost/)
 [ "$body" = "DevUz OK" ] && say "FALLBACK ok" || { say "ERROR без «Офиса»: «$body»"; fail=1; }
