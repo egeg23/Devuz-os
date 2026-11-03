@@ -4,7 +4,9 @@
 # devuz.test=support,<адрес Headscale>,<ключ входа>):
 #  1. по умолчанию канал выключен;
 #  2. devuz-support on — коробка вошла в Headscale (адрес 100.64.x.x);
-#  3. devuz-support off — клиент остановлен, интерфейса tailscale0 нет.
+#  3. devuz-support off — клиент остановлен, интерфейса tailscale0 нет;
+#  4. повторное включение работает без нового ключа (ключ узла сохранён);
+#  5. лишние флаги в support.env (маршруты, SSH) не принимаются.
 # Потом — обычная самопроверка.
 set -u
 say() { echo "DEVUZ-SUPPORT-TEST $*"; }
@@ -17,7 +19,7 @@ unit=devuz-svc-tailscale.service
 case "$server" in http://10.0.2.2:[0-9]*) ;; *) say "ERROR адрес не тестовый: $server"; exit 1 ;; esac
 mkdir -p /etc/devuz
 umask 077
-printf 'TS_AUTHKEY=%s\nTS_EXTRA_ARGS=--login-server=%s\n' "$key" "$server" >/etc/devuz/support.env
+printf 'SUPPORT_SERVER=%s\nSUPPORT_KEY=%s\n' "$server" "$key" >/etc/devuz/support.env
 
 if [ "$(devuz-support status)" = off ] && ! systemctl is-active --quiet "$unit"; then
     say "OFF_BY_DEFAULT ok"
@@ -39,7 +41,28 @@ else
     say "ERROR после выключения канал жив"; fail=1
 fi
 grep -q 'включён' /var/lib/devuz/support.log && grep -q 'выключен' /var/lib/devuz/support.log &&
+    grep -q 'клиент поддержки запущен' /var/lib/devuz/support.log &&
     say "JOURNAL ok: $(wc -l </var/lib/devuz/support.log) записи в журнале клиента" || { say "ERROR нет записей в журнале"; fail=1; }
+
+# 4. Повторное включение: одноразовый ключ уже использован — входит ключ узла.
+if devuz-support on && [ "$(devuz-support status)" = on ]; then
+    say "ON_AGAIN ok"
+else
+    say "ERROR повторное включение: $(devuz-support status)"; journalctl -b -u "$unit" --no-pager -n 30; fail=1
+fi
+devuz-support off
+
+# 5. Лишнее в настройках не проходит, канал не включается.
+cp /etc/devuz/support.env /run/support.env.ok
+printf 'TS_EXTRA_ARGS=--advertise-exit-node --ssh\n' >>/etc/devuz/support.env
+if devuz-support on 2>/tmp/support.err; then
+    say "ERROR канал включился с лишними флагами"; devuz-support off; fail=1
+elif [ "$(devuz-support status)" = off ] && ! systemctl is-active --quiet "$unit"; then
+    say "EXTRA_FLAGS_REFUSED ok: $(head -n1 /tmp/support.err)"
+else
+    say "ERROR после отказа канал в состоянии $(devuz-support status)"; fail=1
+fi
+cp /run/support.env.ok /etc/devuz/support.env
 
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
 systemctl start --no-block devuz-selftest.service

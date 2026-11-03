@@ -3,7 +3,9 @@
 # Тест служб (только тестовый образ, режим devuz.test=services):
 # первая загрузка — PostgreSQL и Caddy поднялись из образов в /usr (без сети),
 # запрос в базу и https работают, пишем строку в базу и перезагружаемся;
-# вторая — службы снова работают, строка на месте. Потом самопроверка.
+# вторая — службы снова работают, строка на месте. Перед перезагрузкой
+# подменяем образ PostgreSQL в хранилище (чужой образ под тем же именем):
+# после загрузки коробка должна вернуть образ из /usr. Потом самопроверка.
 set -u
 say() { echo "DEVUZ-SERVICES $*"; }
 fail=0
@@ -39,10 +41,18 @@ fi
 if [ ! -e "$mark" ]; then
     psql "create table if not exists devuz_test(v text); insert into devuz_test values ('пережила перезагрузку')" >/dev/null
     touch "$mark"
-    if [ "$fail" -eq 0 ]; then say "FIRST_BOOT ok → перезагрузка"; systemctl reboot; exit 0; fi
+    podman tag ghcr.io/egeg23/devuz-caddy:2 ghcr.io/egeg23/devuz-postgres:17
+    if [ "$fail" -eq 0 ]; then say "FIRST_BOOT ok → подменили образ PostgreSQL, перезагрузка"; systemctl reboot; exit 0; fi
 else
     v=$(psql 'select v from devuz_test' 2>&1)
     if [ "$v" = "пережила перезагрузку" ]; then say "DATA_SURVIVED ok"; else say "ERROR после перезагрузки: $v"; fail=1; fi
+    want=$(awk '$2=="ghcr.io/egeg23/devuz-postgres:17" {print $4}' /usr/share/devuz/images/images.list)
+    have=$(podman image inspect --format '{{.Id}}' ghcr.io/egeg23/devuz-postgres:17)
+    if [ -n "$want" ] && [ "$have" = "$want" ] && journalctl -b -u devuz-images.service --no-pager | grep -q 'devuz-postgres:17 в хранилище не тот'; then
+        say "IMAGE_TAMPER_RESTORED ok: подменённый образ заменён образом из /usr"
+    else
+        say "ERROR подмена образа пережила перезагрузку: ${have:0:12}, ждали ${want:0:12}"; fail=1
+    fi
 fi
 
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
