@@ -221,6 +221,21 @@ jobs:
           sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
           exit $rc
 
+      - name: Тест ключей диска (TPM, чужой PCR 7, ключ восстановления)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=luks EXPECT_VERSION="$DEVUZ_VERSION" LOG=luks.log
+          export TEST_TITLE="Тест ключей диска"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in TPM_UNLOCK RECOVERY_ENROLLED PCR7_CHANGED_TPM_UNLOCK RECOVERY_OPEN; do
+            line=$(grep -m1 -o "DEVUZ-LUKS $k.*" luks.log || true)
+            echo "- ${line:-❌ нет DEVUZ-LUKS $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-LUKS OK' luks.log || { echo "::error::тест ключей диска не прошёл"; rc=1; }
+          exit $rc
+
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
         if: env.SABOTAGE == 'none'
         run: |
@@ -324,6 +339,7 @@ jobs:
             /mnt/devuz/output-prod/*.manifest
             boot.log
             update.log
+            luks.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
