@@ -212,6 +212,10 @@ jobs:
                        mkosi.profiles/test/extra/usr/share/containers/systemd -maxdepth 1 -type f -printf '%f\n'
                      printf '%s\n' DEVUZ-SELFTEST DEVUZ-UPDATE 50-devuz-test.conf; } | grep -vx selftest | sort -u)
           for name in $names; do
+            # Имя, на которое законно ссылается боевой файл (например,
+            # devuz-support проверяет, есть ли support-allow-http), в боевом
+            # образе встретится всегда — такие имена этим grep не проверить.
+            if grep -rqF "$name" mkosi.extra; then echo "Пропускаю «$name»: на него ссылается боевой файл"; continue; fi
             grep -qaF "$name" "$WORK/output/devuz_$DEVUZ_VERSION.raw" ||
               { echo "::error::проверка не работает: «$name» не найден даже в тестовом образе"; rc=1; }
             if grep -qaF "$name" "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw"; then
