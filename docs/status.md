@@ -52,8 +52,8 @@
 
 - systemd 257: `OnFailure=` срабатывает на каждом падении службы с `Restart=`, даже если её потом поднимут → в правиле сторожа `RestartMode=direct` (сигнал только когда попытки кончились).
 - После действия `systemd/mkosi` на раннере выгружены профили AppArmor: `docker run` без `--security-opt apparmor=unconfined` падает («docker-default profile could not be loaded»).
-
 - Podman 5.4 quadlet: в `HealthCmd=` кавычки не доживают до оболочки (`node -e "…"` ломается, проверка здоровья всегда падает, контейнер убивается) → сложную проверку кладём в файл (`HealthCmd=node /app/health.js`).
+
 ## Решения владельца
 
 - PR сливаем squash сразу, как только Actions зелёный, не спрашивая.
