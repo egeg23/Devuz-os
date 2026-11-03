@@ -47,6 +47,14 @@ if [ "$c" = 200 ] && grep -q 'model=mock-chat' /tmp/core.out; then
 else
     say "ERROR chat: $c $(cat /tmp/core.out)"; fail=1
 fi
+# Вход в формате Anthropic (SDK студии): токен в x-api-key, ответ — сообщение Anthropic.
+c=$(curl -s -o /tmp/core.A -w '%{http_code}' -H "x-api-key: $t_staff" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -d '{"model":"chat","max_tokens":16,"system":"кратко","messages":[{"role":"user","content":[{"type":"text","text":"привет"}]}]}' "$api/messages")
+if [ "$c" = 200 ] && grep -q '"type":"message"' /tmp/core.A && grep -q 'model=mock-chat' /tmp/core.A; then
+    say "ANTHROPIC ok: /v1/messages → сообщение Anthropic"
+else
+    say "ERROR вход Anthropic: $c $(head -c 300 /tmp/core.A)"; fail=1
+fi
 sleep 1
 usage=$(cat /var/lib/devuz/core/usage-*.jsonl 2>/dev/null)
 grep -q '"app":"test-staff","task":"chat"' <<<"$usage" && say "USAGE ok: $(tail -n1 <<<"$usage")" || { say "ERROR нет записи в учёте"; fail=1; }
