@@ -9,7 +9,12 @@
 
 https://devuz.local, https://localhost {
 	tls internal
-	respond "DevUz OK" 200
+	# «Офис» (devuz-svc-office, 127.0.0.1:8100). Не установлен или не
+	# отвечает — простая страница коробки.
+	reverse_proxy 127.0.0.1:8100
+	handle_errors {
+		respond "DevUz OK" 200
+	}
 }
 
 # Только для проверки здоровья (HealthCmd): отвечает «ok», больше ничего.

@@ -10,6 +10,7 @@
 #   support,<адрес Headscale>,<ключ> — кнопка канала поддержки: вкл / выкл;
 #   core                             — «Ядро»: токены, права, учёт, очередь;
 #   models                           — модели: подпись манифеста, настоящая модель через «Ядро»;
+#   office                           — место под «Офис»: подписанный образ, Caddy, токен «Ядра»;
 #   emergency                        — ручная проверка теста: уйти в аварийный режим.
 set -u
 cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
@@ -25,6 +26,7 @@ case "$mode" in
     support)  exec /usr/lib/devuz/support-test "$arg1" "$arg2" ;;
     core)     exec /usr/lib/devuz/core-test ;;
     models)   exec /usr/lib/devuz/models-test ;;
+    office)   exec /usr/lib/devuz/office-test ;;
     emergency) systemctl --no-block isolate emergency.target ;;
     *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
 esac

@@ -1,0 +1,36 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест места под «Офис» (только тестовый образ, режим devuz.test=office).
+# Заглушка «Офиса» (tests/office-stub) лежит в тестовом реестре на раннере под
+# именем ghcr.io/egeg23/devuz-office:v1 с тестовой подписью.
+#  1. «Офис» включается файлом, образ берётся из реестра с проверкой подписи;
+#  2. открывается через Caddy (https://localhost/);
+#  3. ходит в «Ядро» по сокету со своим токеном (вход Anthropic);
+#  4. токен — 0600, в «Ядре» — только отпечаток с приоритетом live;
+#  5. «Офис» остановлен — Caddy показывает страницу коробки.
+set -u
+say() { echo "DEVUZ-OFFICE-TEST $*"; }
+fail=0
+ca=/var/lib/devuz/caddy/caddy/pki/authorities/local/root.crt
+for i in $(seq 60); do systemctl is-active --quiet devuz-svc-caddy.service devuz-svc-core.service && break; sleep 2; done
+mkdir -p /etc/devuz/office && touch /etc/devuz/office/enabled
+if systemctl start devuz-svc-office.service && systemctl is-active --quiet devuz-svc-office.service; then
+    say "STARTED ok: $(podman image inspect --format '{{.Id}}' ghcr.io/egeg23/devuz-office:v1 | cut -c1-12)"
+else
+    say "ERROR «Офис» не запустился:"; journalctl -b -u devuz-svc-office.service --no-pager -n 40; fail=1
+fi
+body=$(curl -s --cacert "$ca" https://localhost/)
+case "$body" in *"Офис"*"данные пишутся: да"*) say "VIA_CADDY ok: $body" ;; *) say "ERROR через Caddy: «$body»"; fail=1 ;; esac
+c=$(curl -s -o /tmp/office.ai -w '%{http_code}' --cacert "$ca" https://localhost/api/ai)
+if [ "$c" = 200 ] && grep -q '"type":"message"' /tmp/office.ai; then say "CORE_FROM_OFFICE ok: $(head -c 160 /tmp/office.ai)"; else say "ERROR «Офис» → «Ядро»: $c $(head -c 300 /tmp/office.ai)"; fail=1; fi
+m=$(stat -c %a /etc/devuz/office/core-token 2>/dev/null)
+if [ "$m" = 600 ] && grep -q '"priority":"live"' /etc/devuz/core/apps.d/office.json && ! grep -qF "$(cat /etc/devuz/office/core-token)" /etc/devuz/core/apps.d/office.json; then
+    say "TOKEN ok: 0600, в «Ядре» только отпечаток"
+else
+    say "ERROR токен: права $m"; fail=1
+fi
+systemctl stop devuz-svc-office.service
+body=$(curl -s --cacert "$ca" https://localhost/)
+[ "$body" = "DevUz OK" ] && say "FALLBACK ok" || { say "ERROR без «Офиса»: «$body»"; fail=1; }
+[ "$fail" = 0 ] && say "OK" || say "FAIL"
+systemctl start --no-block devuz-selftest.service
