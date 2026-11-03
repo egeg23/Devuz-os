@@ -4,8 +4,8 @@
 # Контейнер с нашей подписью (образ Node — в /usr), под сторожем.
 [Unit]
 Description=DevUz: «Ядро» (шлюз моделей, API v1)
-Wants=devuz-images.service
-After=devuz-images.service
+Wants=devuz-images.service devuz-box-class.service
+After=devuz-images.service devuz-box-class.service
 
 [Container]
 ContainerName=devuz-core
@@ -17,6 +17,8 @@ Volume=/usr/share/devuz/core:/usr/share/devuz/core:ro
 Volume=/etc/devuz/core:/etc/devuz/core:ro
 Volume=/var/lib/devuz/core:/var/lib/devuz/core
 Volume=/run/devuz/core:/run/devuz/core
+# Класс коробки (devuz-box-class): своя таблица задач на Лайт, Про, Джарвис.
+Volume=/run/devuz/box:/run/devuz/box:ro
 Exec=node /app/server.js
 HealthCmd=node /app/health.js
 HealthInterval=10s
@@ -31,7 +33,7 @@ NoNewPrivileges=true
 PodmanArgs=--oom-score-adj=-900
 
 [Service]
-ExecStartPre=/usr/bin/mkdir -p /etc/devuz/core/apps.d /var/lib/devuz/core /run/devuz/core
+ExecStartPre=/usr/bin/mkdir -p /etc/devuz/core/apps.d /var/lib/devuz/core /run/devuz/core /run/devuz/box
 TimeoutStartSec=120
 Slice=devuz-ui.slice
 # systemctl reload devuz-svc-core — перечитать таблицу задач и приложения.

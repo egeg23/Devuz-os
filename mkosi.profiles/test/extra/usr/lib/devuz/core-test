@@ -100,6 +100,21 @@ if curl -s http://127.0.0.1:8091/seen | grep -q 'GONE-q'; then say "ERROR бро
 # 6. В учёте нет текста запросов.
 if cat /var/lib/devuz/core/usage-*.jsonl | grep -q -e 'привет' -e 'GONE-q'; then say "ERROR в учёте текст запроса"; fail=1; else say "USAGE_NO_TEXT ok"; fi
 
+# 7. Класс коробки: тестовая ВМ маленькая — Лайт; без тестовой таблицы «Ядро»
+#    берёт tasks.lite.json, а на видео отвечает, на какой коробке оно есть.
+cls=$(sed -n 's/.*"class":"\([a-z-]*\)".*/\1/p' /run/devuz/box/box.json 2>/dev/null)
+mv /etc/devuz/core/tasks.json /run/core-tasks.test.json
+systemctl reload devuz-svc-core.service; sleep 1
+hc=$(curl -s -m 5 "$api/health" | sed -n 's/.*"box_class":"\([a-z-]*\)".*/\1/p')
+c=$(ask "$t_staff" "кадр" "" video)
+if [ "$cls" = lite ] && [ "$hc" = lite ] && [ "$c" = 404 ] && grep -q 'Джарвис' /tmp/core.out; then
+    say "BOX_CLASS ok: класс lite, таблица tasks.lite.json, видео — $(sed -n 's/.*"message":"\([^"]*\)".*/\1/p' /tmp/core.out)"
+else
+    say "ERROR класс коробки: box.json «$cls», «Ядро» «$hc», видео $c $(cat /tmp/core.out)"; fail=1
+fi
+mv /run/core-tasks.test.json /etc/devuz/core/tasks.json
+systemctl reload devuz-svc-core.service; sleep 1
+
 rm -f "$apps"/test-*.json
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
 systemctl start --no-block devuz-selftest.service
