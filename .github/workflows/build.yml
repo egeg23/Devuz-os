@@ -212,9 +212,10 @@ jobs:
             --allow-insecure-registry "$reg@$d"
           # Службы коробки: в образе — боевые имена registry.devuz.invalid/devuz/…,
           # тестовый профиль берёт их отсюда. Подпись — на боевое имя.
-          for img in postgres:17 caddy:2; do
+          for src in mirror.gcr.io/library/postgres:17 mirror.gcr.io/library/caddy:2 ghcr.io/tailscale/tailscale:v1.84.3; do
+            img=${src##*/}
             name=${img%%:*}
-            skopeo copy --dest-tls-verify=false "docker://mirror.gcr.io/library/$img" "docker://10.0.2.2:5000/devuz/$img"
+            skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5000/devuz/$img"
             d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5000/devuz/$img")
             COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
               --allow-insecure-registry --sign-container-identity "registry.devuz.invalid/devuz/$name" \
@@ -331,6 +332,69 @@ jobs:
           grep -q 'DEVUZ-SERVICES OK' services.log || { echo "::error::тест служб не прошёл"; rc=1; }
           exit $rc
 
+      - name: Тест канала поддержки (Headscale на раннере, кнопка вкл / выкл)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Тестовый Headscale на раннере: гость видит его как http://10.0.2.2:8085.
+          hs="$WORK/headscale"
+          mkdir -p "$hs/config" "$hs/lib" "$hs/run"
+          cat >"$hs/config/config.yaml" <<'YAML'
+          server_url: http://10.0.2.2:8085
+          listen_addr: 0.0.0.0:8085
+          metrics_listen_addr: 127.0.0.1:9090
+          grpc_listen_addr: 127.0.0.1:50443
+          noise:
+            private_key_path: /var/lib/headscale/noise_private.key
+          prefixes:
+            v4: 100.64.0.0/10
+            v6: fd7a:115c:a1e0::/48
+            allocation: sequential
+          derp:
+            server:
+              enabled: false
+            urls:
+              - https://controlplane.tailscale.com/derpmap/default
+            auto_update_enabled: false
+          disable_check_updates: true
+          database:
+            type: sqlite
+            sqlite:
+              path: /var/lib/headscale/db.sqlite
+          dns:
+            magic_dns: false
+            override_local_dns: false
+            base_domain: support.devuz.test
+          unix_socket: /var/run/headscale/headscale.sock
+          unix_socket_permission: "0770"
+          log:
+            level: info
+          YAML
+          docker run -d --name devuz-headscale --security-opt apparmor=unconfined -p 8085:8085 \
+            -v "$hs/config:/etc/headscale" -v "$hs/lib:/var/lib/headscale" -v "$hs/run:/var/run/headscale" \
+            ghcr.io/juanfont/headscale:0.26.1 serve
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:8085/health >/dev/null && break; sleep 1; done
+          docker exec devuz-headscale headscale users create box
+          uid=$(docker exec devuz-headscale headscale users list -o json | jq -r '.[] | select(.name=="box") | .id')
+          key=$(docker exec devuz-headscale headscale preauthkeys create --user "$uid" --expiration 1h -o json | jq -r .key)
+          [ -n "$key" ] && [ "$key" != null ] || { echo "::error::Headscale не выдал ключ"; docker logs devuz-headscale; exit 1; }
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED="support,http://10.0.2.2:8085,$key" EXPECT_VERSION="$DEVUZ_VERSION" LOG=support.log
+          export TEST_TIMEOUT=600 TEST_TITLE="Тест канала поддержки"
+          rc=0; tests/boot-test.sh || rc=$?
+          # Ключ входа — одноразовый тестовый, но в журнал его не пускаем.
+          sed -i "s/$key/<ключ>/g" support.log
+          for k in OFF_BY_DEFAULT ON OFF JOURNAL; do
+            line=$(grep -m1 -o "DEVUZ-SUPPORT-TEST $k .*" support.log || true)
+            echo "- ${line:-❌ нет DEVUZ-SUPPORT-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-SUPPORT-TEST OK' support.log || { echo "::error::тест канала поддержки не прошёл"; rc=1; }
+          echo "- Headscale видит коробку:" >>"$GITHUB_STEP_SUMMARY"
+          docker exec devuz-headscale headscale nodes list | sed 's/^/    /' >>"$GITHUB_STEP_SUMMARY"
+          docker exec devuz-headscale headscale nodes list | grep -q devuz-box ||
+            { echo "::error::коробка не вошла в Headscale"; rc=1; }
+          exit $rc
+
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
         if: env.SABOTAGE == 'none'
         run: |
@@ -438,6 +502,7 @@ jobs:
             containers.log
             watchdog.log
             services.log
+            support.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
