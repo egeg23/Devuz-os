@@ -136,9 +136,19 @@ jobs:
             COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
               --allow-insecure-registry --sign-container-identity "ghcr.io/egeg23/$repo" "10.0.2.2:5001/$repo@$d"
             skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
-              copy --src-tls-verify=false "docker://ghcr.io/egeg23/$img" "oci-archive:$tree/$repo.tar"
+              copy --remove-signatures --src-tls-verify=false "docker://ghcr.io/egeg23/$img" "oci-archive:$tree/$repo.tar"
             echo "$repo.tar ghcr.io/egeg23/$img $(sha256sum <"$tree/$repo.tar" | cut -d' ' -f1)" >>"$tree/images.list"
           done
+          # Проверка, что политика при сборке правда работает: неподписанный образ
+          # в архив не попадает. (В oci-archive подписи не хранятся —
+          # --remove-signatures; проверка подписи идёт до копирования.)
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 docker://10.0.2.2:5001/devuz-unsigned:1
+          if skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
+               copy --remove-signatures --src-tls-verify=false docker://ghcr.io/egeg23/devuz-unsigned:1 "oci-archive:$WORK/unsigned.tar" 2>"$WORK/unsigned.err"; then
+            echo "::error::неподписанный образ прошёл проверку при сборке"; exit 1
+          fi
+          grep -q 'signature' "$WORK/unsigned.err" || { cat "$WORK/unsigned.err"; echo "::error::отказ не по подписи"; exit 1; }
+          echo "Неподписанный образ при сборке отвергнут: $(grep -m1 -o 'Source image rejected.*' "$WORK/unsigned.err")"
           docker rm -f devuz-build-registry
           cat "$tree/images.list"; du -sh "$tree"
           echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/images-tree" >>"$GITHUB_ENV"
