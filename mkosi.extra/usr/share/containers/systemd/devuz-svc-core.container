@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# «Ядро» — шлюз моделей и API платформы v1 (/usr/lib/devuz/core/server.js).
+# Слушает только 127.0.0.1:8090 и сокет /run/devuz/core/core.sock.
+# Контейнер с нашей подписью (образ Node — в /usr), под сторожем.
+[Unit]
+Description=DevUz: «Ядро» (шлюз моделей, API v1)
+Wants=devuz-images.service
+After=devuz-images.service
+
+[Container]
+ContainerName=devuz-core
+Image=ghcr.io/egeg23/devuz-node:22
+Pull=never
+Network=host
+Volume=/usr/lib/devuz/core:/app:ro
+Volume=/usr/share/devuz/core:/usr/share/devuz/core:ro
+Volume=/etc/devuz/core:/etc/devuz/core:ro
+Volume=/var/lib/devuz/core:/var/lib/devuz/core
+Volume=/run/devuz/core:/run/devuz/core
+Exec=node /app/server.js
+HealthCmd=node /app/health.js
+HealthInterval=10s
+HealthStartPeriod=20s
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /etc/devuz/core/apps.d /var/lib/devuz/core /run/devuz/core
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

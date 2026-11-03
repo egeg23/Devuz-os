@@ -1,0 +1,16 @@
+# Только тестовый образ: поддельная модель (OpenAI-совместимая) для теста «Ядра».
+[Unit]
+Description=DevUz: поддельная модель для теста
+Wants=devuz-images.service
+After=devuz-images.service
+
+[Container]
+ContainerName=devuz-mockllm
+Image=ghcr.io/egeg23/devuz-node:22
+Pull=never
+Network=host
+Volume=/usr/lib/devuz/mock-llm.js:/mock-llm.js:ro
+Exec=node /mock-llm.js
+
+[Install]
+WantedBy=multi-user.target

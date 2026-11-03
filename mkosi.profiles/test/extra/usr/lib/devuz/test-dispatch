@@ -8,6 +8,7 @@
 #   watchdog                         — сторож: убитая и зависшая служба поднимаются, вечно падающая — сигнал;
 #   services                         — PostgreSQL и Caddy работают и переживают перезагрузку;
 #   support,<адрес Headscale>,<ключ> — кнопка канала поддержки: вкл / выкл;
+#   core                             — «Ядро»: токены, права, учёт, очередь;
 #   emergency                        — ручная проверка теста: уйти в аварийный режим.
 set -u
 cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
@@ -21,6 +22,7 @@ case "$mode" in
     watchdog) exec /usr/lib/devuz/watchdog-test ;;
     services) exec /usr/lib/devuz/services-test ;;
     support)  exec /usr/lib/devuz/support-test "$arg1" "$arg2" ;;
+    core)     exec /usr/lib/devuz/core-test ;;
     emergency) systemctl --no-block isolate emergency.target ;;
     *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
 esac
