@@ -2,6 +2,20 @@
 # trixie-backports. Пакеты этой версии лежат в GitHub Release
 # kernel-<версия, где ~ заменён на _> (их выкладывает .github/workflows/kernel.yml),
 # поэтому сборка одного коммита не меняется, когда backports уходят вперёд.
-# Новое ядро: поменять версию здесь в PR → после слияния kernel.yml выложит
-# Release → сборки возьмут его.
+#
+# Файл — данные, а не скрипт: читается построчно, не выполняется.
+# KERNEL_SHA256 — хеш каждого .deb (имя — как в Release, «~» там стал «.»).
+# Сборка ставит только пакеты с совпавшим хешем: подменить ядро в Release
+# незаметно нельзя. Хеши сверены с подписанным индексом Debian.
+#
+# Новое ядро — два шага: (1) PR с новой KERNEL_VERSION → после слияния
+# kernel.yml выложит Release и напечатает строки KERNEL_SHA256 в отчёт;
+# (2) PR с этими строками. До шага 2 сборка ядро из Release не берёт.
 KERNEL_VERSION=7.2.11-1~bpo13+1
+KERNEL_SHA256=4b163432fd63dc295e8dcc366c38122e2c7e7d5a5cdcd31426f6f957c6defbc2 linux-base-7.2.11+deb13-amd64_7.2.11-1.bpo13+1_amd64.deb
+KERNEL_SHA256=83309b4e398105fc17d0447f696136f8ac2b6f6cd33a4959a9c3d717e866fd24 linux-base-amd64_7.2.11-1.bpo13+1_amd64.deb
+KERNEL_SHA256=9c1a30ccf8d94672d8a89425fe419d954096718527155fd58974bd1a1043c55f linux-base_4.17.bpo13+1_all.deb
+KERNEL_SHA256=4177643521605976abdd8735ddcf05320a5e9f08c6c625790a3751fc1c3fe171 linux-binary-7.2.11+deb13-amd64_7.2.11-1.bpo13+1_amd64.deb
+KERNEL_SHA256=ca8cfb9e3e1e7cbfb98c2d4fdbf42652965035f84608a1f5dbd5c224364a0273 linux-image-7.2.11+deb13-amd64_7.2.11-1.bpo13+1_amd64.deb
+KERNEL_SHA256=76b0711271c1b2af6743740fd26bbb1e8e2afdb9b29992011f39d168de3a3112 linux-image-amd64_7.2.11-1.bpo13+1_amd64.deb
+KERNEL_SHA256=80f1b5f671a1b0b7bf47c724077e71911216a08da6057b1f7902e5e4138a371a linux-modules-7.2.11+deb13-amd64_7.2.11-1.bpo13+1_amd64.deb
