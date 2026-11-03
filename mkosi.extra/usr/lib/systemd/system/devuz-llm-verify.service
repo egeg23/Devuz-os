@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Проверка модели перед сервером модели (devuz-svc-llm): подпись манифеста и
+# хеши файлов. Отдельной службой, а не ExecStartPre: так битая модель не
+# перезапускается сторожем по кругу — сервер просто не стартует, сигнал
+# один раз. Перезапуск сервера модели проверяет модель заново.
+[Unit]
+Description=DevUz: проверка модели (подпись и хеши)
+ConditionPathExists=/etc/devuz/llm-model
+PartOf=devuz-svc-llm.service
+OnFailure=devuz-alert@%n.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/models-verify
+StandardOutput=journal+console

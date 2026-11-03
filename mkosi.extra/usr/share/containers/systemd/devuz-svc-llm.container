@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Сервер модели: llama.cpp (llama-server, MIT), OpenAI-совместимый, только
+# на 127.0.0.1:8081 — к нему ходит «Ядро» (бэкенд llm в tasks.json).
+# Какая модель — /etc/devuz/llm-model (имя каталога в /var/lib/devuz/models).
+# Модель грузится, только если подпись манифеста и хеши файлов верны
+# (devuz-llm-verify.service); нет — сервер не стартует, сигнал один раз.
+# Модели — в фоновом ломте devuz-ai.slice: интерфейс важнее.
+[Unit]
+Description=DevUz: сервер модели (llama.cpp)
+Wants=devuz-images.service
+After=devuz-images.service
+ConditionPathExists=/etc/devuz/llm-model
+Requires=devuz-llm-verify.service
+After=devuz-llm-verify.service
+
+[Container]
+ContainerName=devuz-llm
+Image=ghcr.io/egeg23/devuz-llama:server
+Pull=never
+Network=host
+Volume=/var/lib/devuz/models:/models:ro
+EnvironmentFile=/run/devuz/llm/llm.env
+Environment=LLAMA_ARG_HOST=127.0.0.1 LLAMA_ARG_PORT=8081 LLAMA_ARG_CTX_SIZE=4096 LLAMA_ARG_NO_WEBUI=1
+DropCapability=all
+NoNewPrivileges=true
+ReadOnly=true
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8081/health
+HealthInterval=10s
+HealthStartPeriod=120s
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+Slice=devuz-ai.slice
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

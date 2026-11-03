@@ -1,0 +1,106 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест моделей (только тестовый образ, режим devuz.test=models):
+#  1. настоящая маленькая модель (SmolLM2-135M, на процессоре) с подписанным
+#     манифестом загружается, сервер модели (llama.cpp) поднимается;
+#  2. приложение с токеном получает ответ модели через «Ядро» (задача chat-real);
+#  3. манифест с неверной подписью, файл с другим хешем, лишний файл в
+#     каталоге модели — сервер модели не стартует.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-MODELS-TEST $*"; }
+fail=0
+src=/usr/share/devuz/test-models/smollm2-135m
+models=/var/lib/devuz/models
+api=http://127.0.0.1:8090/v1
+llm=devuz-svc-llm.service
+
+# Подготовить модель: копия в /var/lib/devuz/models (боевые веса живут там же).
+mkdir -p "$models"
+cp -a "$src" "$models/smollm2-135m"
+use() { echo "$1" >/etc/devuz/llm-model; systemctl reset-failed devuz-llm-verify.service "$llm" 2>/dev/null; }
+
+# 1. Хорошая модель.
+use smollm2-135m
+t0=$(date +%s)
+if systemctl start "$llm"; then
+    say "MODEL_OK ok: подпись и хеши верны, сервер модели поднялся за $(( $(date +%s) - t0 )) с"
+else
+    say "ERROR сервер модели не поднялся:"; journalctl -b -u devuz-llm-verify -u "$llm" --no-pager -n 40; fail=1
+fi
+
+# 2. Ответ настоящей модели через «Ядро».
+tok=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+mkdir -p /etc/devuz/core/apps.d
+printf '{"token_sha256":"%s","tasks":["chat-real"],"priority":"staff"}\n' "$(printf %s "$tok" | sha256sum | cut -d' ' -f1)" >/etc/devuz/core/apps.d/test-models.json
+systemctl reload devuz-svc-core.service; sleep 1
+t0=$(date +%s%N)
+c=$(curl -s -m 300 -o /tmp/real.out -w '%{http_code}' -H "authorization: Bearer $tok" -H 'content-type: application/json' \
+    -d '{"model":"chat-real","max_tokens":24,"messages":[{"role":"user","content":"Say hello in one short sentence."}]}' "$api/chat/completions")
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+text=$(sed -n 's/.*"content":"\([^"]*\)".*/\1/p' /tmp/real.out | head -c 120)
+tps=$(sed -n 's/.*"predicted_per_second":\([0-9.]*\).*/\1/p' /tmp/real.out | cut -c1-6)
+if [ "$c" = 200 ] && [ -n "$text" ]; then
+    say "REAL_CHAT ok: ${ms} мс, ${tps:-?} ток/с, ответ: «$text»"
+else
+    say "ERROR ответ модели: $c $(head -c 300 /tmp/real.out)"; fail=1
+fi
+rm -f /etc/devuz/core/apps.d/test-models.json; systemctl reload devuz-svc-core.service
+systemctl stop "$llm"
+
+# 3. Битые модели не загружаются.
+bad() { # имя ключ команда-порчи
+    local name=$1 key=$2; shift 2
+    rm -rf "${models:?}/$name"; cp -a "$models/smollm2-135m" "$models/$name"
+    sed -i "s/^name: .*/name: $name/" "$models/$name/MANIFEST"
+    "$@" "$models/$name"
+    use "$name"
+    if systemctl start "$llm" 2>/dev/null || systemctl is-active --quiet "$llm"; then
+        say "ERROR модель $name загрузилась"; fail=1; systemctl stop "$llm"
+    else
+        # Отказ должен быть именно по подписи (BAD signature), а не по любой ошибке.
+        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F "DEVUZ-MODELS ERROR $name" | grep -F 'BAD signature' | tail -n1)
+        if [ -n "$why" ]; then say "$key ok: ${why#DEVUZ-MODELS ERROR }"; else say "ERROR $name: отказ не по подписи: $(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F "ERROR $name" | tail -n1)"; fail=1; fi
+    fi
+    rm -rf "${models:?}/$name"
+}
+# Имя в манифесте поменяли — подпись уже не та.
+bad bad-sig BAD_SIG_REFUSED true
+# Подпись верна, но в весах изменён один байт.
+flip() { f=$(ls "$1"/*.gguf); printf 'X' | dd of="$f" bs=1 seek=4096 conv=notrunc 2>/dev/null; }
+# Для проверки хеша нужен верный манифест: каталог с тем же именем, что в
+# подписанном манифесте, — поэтому портим копию в отдельном корне.
+bad_hash() {
+    local key=BAD_HASH_REFUSED
+    mv "$models/smollm2-135m" /var/lib/devuz/smollm2-135m.good
+    cp -a /var/lib/devuz/smollm2-135m.good "$models/smollm2-135m"
+    flip "$models/smollm2-135m"
+    use smollm2-135m
+    if systemctl start "$llm" 2>/dev/null; then say "ERROR модель с битым хешем загрузилась"; fail=1; systemctl stop "$llm"
+    else
+        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F 'sha256 не совпал' | tail -n1)
+        [ -n "$why" ] && say "$key ok: ${why#DEVUZ-MODELS ERROR }" || { say "ERROR битый хеш: причины в журнале нет"; fail=1; }
+    fi
+    rm -rf "${models:?}/smollm2-135m"; mv /var/lib/devuz/smollm2-135m.good "$models/smollm2-135m"
+}
+bad_hash
+bad_extra() {
+    mv "$models/smollm2-135m" /var/lib/devuz/smollm2-135m.good
+    cp -a /var/lib/devuz/smollm2-135m.good "$models/smollm2-135m"
+    echo evil >"$models/smollm2-135m/libevil.so"
+    use smollm2-135m
+    if systemctl start "$llm" 2>/dev/null; then say "ERROR модель с лишним файлом загрузилась"; fail=1; systemctl stop "$llm"
+    else
+        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F 'лишний файл' | tail -n1)
+        [ -n "$why" ] && say "EXTRA_FILE_REFUSED ok: ${why#DEVUZ-MODELS ERROR }" || { say "ERROR лишний файл: причины в журнале нет"; fail=1; }
+    fi
+    rm -rf "${models:?}/smollm2-135m"; mv /var/lib/devuz/smollm2-135m.good "$models/smollm2-135m"
+}
+bad_extra
+
+# Убрать за собой: сервер модели выключен, упавшие проверки не числятся.
+rm -f /etc/devuz/llm-model
+systemctl stop "$llm" 2>/dev/null
+systemctl reset-failed devuz-llm-verify.service "$llm" 'devuz-alert@*' 2>/dev/null
+if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
+systemctl start --no-block devuz-selftest.service
