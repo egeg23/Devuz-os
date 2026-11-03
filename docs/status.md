@@ -46,6 +46,8 @@
 - systemd-stub 257 дописывает к строке ядра `io.systemd.stub.kernel-cmdline-extra` из SMBIOS и под Secure Boot (отказ только в confidential VM): кто управляет SMBIOS (прошивка, гипервизор), может дописать и `usrhash=`. От того, у кого в руках диск, это не открыто (ESP не влияет на строку ядра подписанного UKI). Прежняя запись «под SB не берёт» была неверной (аудит недели 3).
 - systemd-stub берёт `*.cred` с ESP (`/loader/credentials/`, `<UKI>.extra.d/`) без проверки подписи, а PID1 их импортирует → через `tmpfiles.extra` и т. п. — код от root. Закрыто `systemd.import_credentials=no` в боевом UKI; тестовые механизмы — только в профиле test (аудит недели 3).
 
+- После действия `systemd/mkosi` на раннере выгружены профили AppArmor: `docker run` без `--security-opt apparmor=unconfined` падает («docker-default profile could not be loaded»).
+
 ## Решения владельца
 
 - PR сливаем squash сразу, как только Actions зелёный, не спрашивая.

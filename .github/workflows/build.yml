@@ -260,7 +260,10 @@ jobs:
           # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
           # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
           sudo ip addr add 10.0.2.2/32 dev lo
-          docker run -d --name devuz-registry -p 5000:5000 mirror.gcr.io/library/registry:2
+          # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
+          # загрузить свой профиль по умолчанию — запускаем реестр без него.
+          docker run -d --name devuz-registry --security-opt apparmor=unconfined \
+            -p 5000:5000 mirror.gcr.io/library/registry:2
           for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
           command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
           reg=10.0.2.2:5000/devuz/hello
