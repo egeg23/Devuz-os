@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Канал поддержки: клиент Tailscale к нашему Headscale. По умолчанию
+# ВЫКЛЮЧЕН: включает и выключает только кнопка — devuz-support on/off
+# (метка /var/lib/devuz/support-on). Выключено — клиента нет, к коробке не
+# зайти никак. Адрес сервера и ключ входа — /etc/devuz/support.env
+# (заводская настройка, неделя 8). Контейнер с нашей подписью, под сторожем.
+[Unit]
+Description=DevUz: канал поддержки (Tailscale)
+ConditionPathExists=/var/lib/devuz/support-on
+ConditionPathExists=/etc/devuz/support.env
+
+[Container]
+ContainerName=devuz-tailscale
+Image=registry.devuz.invalid/devuz/tailscale:v1.84.3
+Network=host
+AddDevice=/dev/net/tun
+AddCapability=NET_ADMIN NET_RAW
+Volume=/var/lib/devuz/tailscale:/var/lib/tailscale
+EnvironmentFile=/etc/devuz/support.env
+Environment=TS_STATE_DIR=/var/lib/tailscale TS_USERSPACE=false TS_ACCEPT_DNS=false TS_HOSTNAME=devuz-box
+HealthCmd=tailscale status --peers=false
+HealthInterval=10s
+HealthStartPeriod=60s
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /var/lib/devuz/tailscale
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
