@@ -1,0 +1,140 @@
+#!/bin/bash
+# Самопроверка: печатает версии и состояние, пишет DEVUZ-SELFTEST OK
+# (или FAIL) и выключает машину. Тест в Actions читает эти строки.
+set -u
+
+fail=0
+say() { echo "DEVUZ-SELFTEST $*"; }
+
+say "BEGIN"
+say "KERNEL $(uname -r)"
+# Без awk и других программ из /etc/alternatives: самопроверка должна
+# работать и на образе с пустым /etc (разведка недели 1 показала, что
+# там нет даже awk).
+sd_line=$(systemctl --version | head -n1)
+set -- $sd_line
+say "SYSTEMD ${2:-}"
+say "SYSTEMD_FULL $sd_line"
+
+. /usr/lib/os-release
+say "IMAGE_ID ${IMAGE_ID:-}"
+say "IMAGE_VERSION ${IMAGE_VERSION:-}"
+say "BUILD_ID ${BUILD_ID:-}"
+say "PRETTY_NAME ${PRETTY_NAME:-}"
+echo "--- os-release ---"
+cat /usr/lib/os-release
+echo "--- /usr ---"
+findmnt -n -o SOURCE,FSTYPE,OPTIONS /usr || fail=1
+usr_fs=$(findmnt -n -o FSTYPE /usr || true)
+say "USR_FS ${usr_fs}"
+[ "$usr_fs" = "erofs" ] || { say "ERROR /usr is not erofs"; fail=1; }
+# /usr должен идти через dm-verity: устройство /dev/mapper/usr, у которого
+# в /sys/block/dm-*/dm/uuid стоит префикс CRYPT-VERITY-.
+usr_src=$(findmnt -n -o SOURCE /usr || true)
+usr_verity=no
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] || continue
+    if [ "$(cat "$d/name")" = usr ]; then
+        case "$(cat "$d/uuid")" in CRYPT-VERITY-*) usr_verity=yes ;; esac
+    fi
+done
+say "USR_SOURCE ${usr_src}"
+say "USR_VERITY ${usr_verity}"
+[ "$usr_verity" = yes ] || { say "ERROR /usr не под dm-verity"; fail=1; }
+case " $(cat /proc/cmdline) " in
+    *" usrhash="*) say "USRHASH есть в строке ядра" ;;
+    *) say "ERROR нет usrhash= в строке ядра"; fail=1 ;;
+esac
+# Root создан при первой загрузке (systemd-repart в initrd), /etc
+# заполнен из заготовки /usr/share/factory/etc.
+root_fs=$(findmnt -n -o FSTYPE / || true)
+say "ROOT_FS ${root_fs}"
+say "ROOT_SOURCE $(findmnt -n -o SOURCE / || true)"
+[ "$root_fs" = ext4 ] || { say "ERROR root не ext4"; fail=1; }
+# Root зашифрован: /dev/mapper/root поверх LUKS2. Заголовок LUKS2 (JSON
+# со смещения 4096) читаем без cryptsetup: токен systemd-tpm2 и PCR политики.
+root_luks=no tpm2_token=no tpm2_pcrs=нет tpm2_pubkey_pcrs=нет
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] && [ "$(cat "$d/name")" = root ] || continue
+    case "$(cat "$d/uuid")" in CRYPT-LUKS2-*) root_luks=yes ;; esac
+    for s in "$d"/../slaves/*; do
+        hdr=$(dd if="/dev/${s##*/}" bs=4096 skip=1 count=3 status=none | tr -d '\000')
+        case "$hdr" in *'"type":"systemd-tpm2"'*) tpm2_token=yes ;; esac
+        v=${hdr#*\"tpm2-pcrs\":\[}; [ "$v" != "$hdr" ] && tpm2_pcrs=${v%%]*}
+        v=${hdr#*\"tpm2_pubkey_pcrs\":\[}; [ "$v" = "$hdr" ] && v=${hdr#*\"tpm2-pubkey-pcrs\":\[}
+        [ "$v" != "$hdr" ] && tpm2_pubkey_pcrs=${v%%]*}
+    done
+done
+say "ROOT_LUKS ${root_luks}"
+say "TPM2_TOKEN ${tpm2_token}"
+say "TPM2_PCRS ${tpm2_pcrs}"
+say "TPM2_PUBKEY_PCRS ${tpm2_pubkey_pcrs}"
+[ "$root_luks" = yes ] || { say "ERROR root не зашифрован"; fail=1; }
+[ "$tpm2_token" = yes ] || { say "ERROR нет ключа TPM2 в LUKS2"; fail=1; }
+if [ -e /etc/.devuz-factory-etc ]; then say "FACTORY_ETC yes"; else say "FACTORY_ETC no"; fail=1; fi
+# Находки разведки недели 1 на пустом /etc: ссылки /etc/alternatives
+# (awk) и настройки PAM (общий /etc/pam.d/other из libpam-runtime; пакета
+# login в образе нет, поэтому /etc/pam.d/login и не ждём).
+if command -v awk >/dev/null; then say "ALTERNATIVES yes"; else say "ALTERNATIVES no"; fail=1; fi
+if [ -e /etc/pam.d/other ]; then say "PAM yes"; else say "PAM no"; fail=1; fi
+# Secure Boot: последний байт переменной SecureBoot (1 — включён).
+sb_var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+sb=$( [ -r "$sb_var" ] && tail -c1 "$sb_var" | od -An -tu1 | tr -d ' ' )
+say "SECURE_BOOT ${sb:-нет}"
+echo "--- счёт загрузок ---"
+# systemd-boot передаёт путь к UKI со счётчиком; systemd-bless-boot после
+# boot-complete.target переименовывает файл, убирая «+N-M».
+bootctl status --no-pager 2>/dev/null | grep -iE "boot count|current entry|Booted" || true
+uki_dir=/boot/EFI/Linux
+[ -d "$uki_dir" ] || uki_dir=/efi/EFI/Linux
+ls -1 "$uki_dir" 2>/dev/null | sed 's/^/  UKI: /'
+bless=$(systemctl show -p ActiveState --value systemd-bless-boot.service 2>/dev/null)
+bless_result=$(systemctl show -p Result --value systemd-bless-boot.service 2>/dev/null)
+say "BLESS ${bless:-нет}/${bless_result:-нет}"
+# Проверяем только UKI текущей версии: рядом может законно лежать «плохая»
+# версия со счётчиком +0-3 (после отката).
+counted=no
+for f in "$uki_dir/devuz_${IMAGE_VERSION:-}+"*.efi; do [ -e "$f" ] && counted=yes; done
+if [ -e "$uki_dir/devuz_${IMAGE_VERSION:-}.efi" ] && [ "$counted" = no ]; then
+    say "BOOT_COUNT засчитана"
+else
+    say "ERROR загрузка не засчитана: в $uki_dir нет devuz_${IMAGE_VERSION:-}.efi без счётчика"
+    fail=1
+fi
+echo "--- разделы ---"
+lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,PARTLABEL,MOUNTPOINTS || true
+echo "--- /etc (что есть на верхнем уровне) ---"
+echo $(ls -A /etc)
+echo "--- системные пользователи ---"
+for u in root messagebus systemd-network systemd-resolve; do
+    if getent passwd "$u" >/dev/null; then say "USER $u есть"; else say "USER $u НЕТ"; fi
+done
+echo "--- включённые юниты ---"
+systemctl list-unit-files --state=enabled --no-pager --no-legend || { say "ERROR list-unit-files"; fail=1; }
+echo "--- время загрузки ---"
+systemd-analyze time --no-pager || true
+echo "--- упавшие юниты ---"
+if ! failed_raw=$(systemctl list-units --state=failed --no-legend --plain --no-pager); then
+    say "ERROR не удалось получить список упавших юнитов"
+    fail=1
+fi
+failed=""
+while read -r unit _; do
+    [ -n "$unit" ] && failed="$failed $unit"
+done <<<"$failed_raw"
+if [ -n "$failed" ]; then
+    for u in $failed; do
+        say "FAILED_UNIT $u"
+        journalctl -b -u "$u" --no-pager -n 30 || true
+    done
+    fail=1
+fi
+systemctl is-active --quiet devuz-ready.service || { say "ERROR devuz-ready не активна"; fail=1; }
+
+if [ "$fail" -eq 0 ]; then
+    say "OK"
+else
+    say "FAIL"
+fi
+
+systemctl poweroff --no-block

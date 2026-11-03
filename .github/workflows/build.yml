@@ -1,0 +1,628 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Сборка образа DevUz OS и тест загрузки в QEMU.
+# Версия mkosi — v27.1 (та же, что в README). Меняем в обоих местах сразу.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: "Проверка теста (no-kernel, emergency, corrupt-usr, unsigned — ожидается красный)"
+        type: choice
+        default: none
+        options: [none, no-kernel, emergency, corrupt-usr, unsigned]
+
+permissions:
+  contents: read
+  actions: read   # чтобы скачать манифест последней сборки main для сравнения
+
+concurrency:
+  # Ручные прогоны (проверка теста, разведка) не отменяют друг друга.
+  group: build-${{ github.ref }}-${{ inputs.sabotage || 'none' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SABOTAGE: ${{ inputs.sabotage || 'none' }}
+      WORK: /mnt/devuz
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Место на диске и рабочие каталоги
+        run: |
+          df -h / /mnt || true
+          # На / у раннера мало места, на /mnt — больше: туда кэш, вывод и
+          # временные файлы mkosi.
+          sudo mkdir -p "$WORK"
+          sudo chown "$(id -u):$(id -g)" "$WORK"
+          mkdir -p "$WORK"/{cache,output,workspace}
+          echo "MKOSI_DIRS=--cache-directory=$WORK/cache --output-directory=$WORK/output --workspace-directory=$WORK/workspace" >>"$GITHUB_ENV"
+
+      - name: Установить mkosi v27.1
+        uses: systemd/mkosi@ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b # v27.1
+
+      - name: OVMF на раннере (обход ошибки mkosi v27.1)
+        run: |
+          # При FirmwareVariables=custom mkosi v27.1 ищет OVMF_VARS_4M.fd на самом
+          # раннере, а не в tools tree. Ставим ovmf, чтобы файл был по тому же пути.
+          sudo apt-get install -y --no-install-recommends ovmf
+          ls -l /usr/share/OVMF/OVMF_VARS_4M.fd
+
+      - name: Свежий debian-archive-keyring
+        run: |
+          # В Ubuntu 24.04 keyring старый, без ключей trixie. Это корень доверия
+          # всей сборки, поэтому версия и sha256 закреплены здесь (сверены с
+          # подписанным индексом trixie); новая версия — отдельным PR.
+          deb=debian-archive-keyring_2025.1_all.deb
+          sha=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
+          curl -fsSLO "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$deb"
+          echo "$sha  $deb" | sha256sum --strict -c -
+          sudo dpkg -i "$deb"
+          dpkg-query -W debian-archive-keyring
+          ls -l /usr/share/keyrings/ | grep -i debian
+          test -e /usr/share/keyrings/debian-archive-keyring.gpg || {
+            echo "::error::нет /usr/share/keyrings/debian-archive-keyring.gpg"; exit 1; }
+
+      - name: Версия, хеш коммита, время коммита
+        run: |
+          echo "DEVUZ_BUILD_ID=$(echo '${{ github.event.pull_request.head.sha || github.sha }}' | cut -c1-12)" >>"$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
+          echo "DEVUZ_VERSION=$(./mkosi.version)" >>"$GITHUB_ENV"
+
+      - name: Тестовый ключ подписи verity (на лету, никуда не сохраняется)
+        run: |
+          mkosi genkey
+          openssl x509 -in mkosi.crt -noout -subject -enddate
+
+      - name: Тестовый ключ подписи обновлений GPG (на лету, никуда не сохраняется)
+        run: |
+          # Закрытый ключ живёт только в $GNUPGHOME этого прогона. Открытый кладём
+          # в образ по пути, где его ищет systemd-sysupdate (systemd 257:
+          # /usr/lib/systemd/import-pubring.gpg) — через отдельное дерево файлов.
+          export GNUPGHOME="$WORK/gnupg"
+          mkdir -p -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key "DevUz test updates <noreply@devuz.invalid>" ed25519 sign 30d
+          mkdir -p "$WORK/keys-tree/usr/lib/systemd"
+          gpg --export >"$WORK/keys-tree/usr/lib/systemd/import-pubring.gpg"
+          gpg --list-keys
+          echo "GNUPGHOME=$GNUPGHOME" >>"$GITHUB_ENV"
+          # Ключ подписи моделей — отдельный (свой GNUPGHOME): им подписываются
+          # только манифесты моделей, не обновления.
+          export GNUPGHOME="$WORK/gnupg-models"
+          mkdir -p -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key "DevUz test models <noreply@devuz.invalid>" ed25519 sign 30d
+          mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
+          gpg --export >"$WORK/keys-tree/usr/lib/devuz/keys/models.gpg"
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/keys-tree" >>"$GITHUB_ENV"
+
+      - name: Тестовый ключ подписи контейнеров cosign (на лету, никуда не сохраняется)
+        run: |
+          # cosign 2.4: подписи тегами .sig — их читает Podman 5.4 из Debian 13.
+          v=v2.4.1
+          base=https://github.com/sigstore/cosign/releases/download/$v
+          curl -fsSLo /tmp/cosign-linux-amd64 "$base/cosign-linux-amd64"
+          curl -fsSLo /tmp/cosign_checksums.txt "$base/cosign_checksums.txt"
+          (cd /tmp && grep ' cosign-linux-amd64$' cosign_checksums.txt | sha256sum -c -)
+          sudo install -m 755 /tmp/cosign-linux-amd64 /usr/local/bin/cosign
+          mkdir -p "$WORK/cosign"
+          (cd "$WORK/cosign" && COSIGN_PASSWORD= cosign generate-key-pair)
+          # Открытый ключ — в образ (политика /usr/share/devuz/containers/policy.json его ждёт).
+          mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
+          cp "$WORK/cosign/cosign.pub" "$WORK/keys-tree/usr/lib/devuz/keys/containers.pub"
+
+      - name: Образы служб — в /usr (подпись проверяется при сборке)
+        run: |
+          # Коробке не нужен интернет: образы служб едут в /usr (под verity).
+          # Здесь их подписываем (имя — наш реестр ghcr.io/egeg23), проверяем
+          # подпись той же политикой, что на коробке, и кладём архивами в
+          # /usr/share/devuz/images. Реестр сборки после этого гасим: гостю
+          # брать службы из сети негде — тест служб это и проверяет.
+          sudo ip addr replace 10.0.2.2/32 dev lo
+          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
+          docker run -d --name devuz-build-registry --security-opt apparmor=unconfined \
+            -p 5001:5000 mirror.gcr.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:5001/v2/ >/dev/null && break; sleep 1; done
+          cfg="$WORK/images-verify"; tree="$WORK/images-tree/usr/share/devuz/images"
+          mkdir -p "$cfg/registries.d" "$tree"
+          sed "s#/usr/lib/devuz/keys/containers.pub#$WORK/cosign/cosign.pub#" \
+            mkosi.extra/usr/share/devuz/containers/policy.json >"$cfg/policy.json"
+          cp mkosi.extra/usr/share/devuz/containers/registries.d/default.yaml "$cfg/registries.d/"
+          printf '[[registry]]\nprefix = "ghcr.io/egeg23"\nlocation = "10.0.2.2:5001"\ninsecure = true\n' >"$cfg/registries.conf"
+          : >"$tree/images.list"
+          # Источники — по точному отпечатку (digest), а не по тегу: что
+          # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
+          # отпечатком (теги в именах справа: postgres 17, caddy 2,
+          # tailscale v1.84.3, node 22-bookworm-slim, llama.cpp server-b12030 — CPU).
+          for pair in "mirror.gcr.io/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1 devuz-postgres:17" \
+                      "mirror.gcr.io/library/caddy@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e devuz-caddy:2" \
+                      "ghcr.io/tailscale/tailscale@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e devuz-tailscale:v1.84.3" \
+                      "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22" \
+                      "ghcr.io/ggml-org/llama.cpp@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b devuz-llama:server"; do
+            set -- $pair; src=$1; img=$2; repo=${img%%:*}
+            skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
+            d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
+            COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+              --allow-insecure-registry --sign-container-identity "ghcr.io/egeg23/$repo" "10.0.2.2:5001/$repo@$d"
+            skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
+              copy --remove-signatures --src-tls-verify=false "docker://ghcr.io/egeg23/$img" "oci-archive:$tree/$repo.tar"
+            # ID образа = sha256 его конфигурации: по нему коробка при каждой
+            # загрузке сверяет, что под именем службы лежит именно этот образ.
+            iid=$(skopeo inspect --raw "oci-archive:$tree/$repo.tar" | jq -r .config.digest)
+            [[ "$iid" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::нет ID образа $repo"; exit 1; }
+            echo "$repo.tar ghcr.io/egeg23/$img $(sha256sum <"$tree/$repo.tar" | cut -d' ' -f1) ${iid#sha256:}" >>"$tree/images.list"
+          done
+          # Проверка, что политика при сборке правда работает: неподписанный образ
+          # в архив не попадает. (В oci-archive подписи не хранятся —
+          # --remove-signatures; проверка подписи идёт до копирования.)
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 docker://10.0.2.2:5001/devuz-unsigned:1
+          if skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
+               copy --remove-signatures --src-tls-verify=false docker://ghcr.io/egeg23/devuz-unsigned:1 "oci-archive:$WORK/unsigned.tar" 2>"$WORK/unsigned.err"; then
+            echo "::error::неподписанный образ прошёл проверку при сборке"; exit 1
+          fi
+          grep -q 'signature' "$WORK/unsigned.err" || { cat "$WORK/unsigned.err"; echo "::error::отказ не по подписи"; exit 1; }
+          echo "Неподписанный образ при сборке отвергнут: $(grep -m1 -o 'Source image rejected.*' "$WORK/unsigned.err")"
+          docker rm -f devuz-build-registry
+          cat "$tree/images.list"; du -sh "$tree"
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/images-tree" >>"$GITHUB_ENV"
+
+      - name: Тестовая модель (только в тестовом образе)
+        run: |
+          # SmolLM2-135M-Instruct (Apache-2.0), 4 бита, ~100 МБ — работает на
+          # процессоре. Файл закреплён коммитом и sha256. Манифест подписываем
+          # тестовым ключом моделей; кладём в /usr тестового образа, тест сам
+          # копирует модель в /var/lib/devuz/models (боевые веса — не в /usr).
+          f=SmolLM2-135M-Instruct-Q4_K_M.gguf
+          sha=2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d
+          d="$WORK/test-models-tree/usr/share/devuz/test-models/smollm2-135m"
+          mkdir -p "$d"
+          curl -fsSL -o "$d/$f" "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/$f"
+          echo "$sha  $d/$f" | sha256sum --strict -c -
+          printf 'name: smollm2-135m\nversion: 1\nlicense: Apache-2.0\nformat: gguf\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
+          GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
+          cat "$d/MANIFEST"
+          # Только в MKOSI_DIRS (тестовая сборка и запуски); боевая сборка
+          # перечисляет свои деревья явно — модели в ней нет.
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/test-models-tree" >>"$GITHUB_ENV"
+
+      - name: Пакеты для сборки (ядро из Release, без dracut)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/prepare-packages.sh
+
+      - name: Конфигурация
+        run: mkosi $MKOSI_DIRS --image-version="$DEVUZ_VERSION" summary
+
+      - name: Сборка тестового образа (профиль test)
+        run: |
+          extra=""
+          if [ "$SABOTAGE" = no-kernel ]; then
+            echo "::warning::Собираем образ без ядра — проверка, что тест станет красным"
+            extra="--bootable=no"
+          elif [ "$SABOTAGE" = unsigned ]; then
+            echo "::warning::Собираем образ без подписи Secure Boot — прошивка не должна его запустить"
+            extra="--secure-boot=no"
+          fi
+          start=$(date +%s)
+          # Тестовый образ: тестовые службы и приём учётных данных
+          # (mkosi.profiles/test/). На нём идут все тесты загрузки.
+          mkosi $MKOSI_DIRS --profile=test --image-version="$DEVUZ_VERSION" $extra -f build
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >>"$GITHUB_ENV"
+          ls -la "$WORK/output"
+
+      - name: Сборка боевого образа
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Боевой образ (без профиля) — то, что уходит в артефакты и на
+          # коробки. Отличается от тестового только тестовыми службами и
+          # строкой ядра; проверки ниже — что отличия именно такие.
+          mkdir -p "$WORK/output-prod"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-prod" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
+                --image-version="$DEVUZ_VERSION" -f build
+          ls -la "$WORK/output-prod"
+
+      - name: Проверка боевого образа (нет тестовых служб, учётные данные не принимаются)
+        if: env.SABOTAGE == 'none'
+        run: |
+          rc=0
+          uki="$WORK/output-prod/devuz_$DEVUZ_VERSION.efi"
+          objcopy -O binary --only-section=.cmdline "$uki" "$WORK/prod.cmdline"
+          echo "Строка ядра боевого UKI: $(tr -d '\0' <"$WORK/prod.cmdline")"
+          grep -qw 'systemd.import_credentials=no' "$WORK/prod.cmdline" ||
+            { echo "::error::в боевом UKI нет systemd.import_credentials=no"; rc=1; }
+          # Имена всех тестовых программ и юнитов (их список — из профиля test)
+          # плюс строки тестов. Положительный контроль: в тестовом образе каждое
+          # имя находится — иначе grep ничего не доказывает (например, если
+          # /usr начнут сжимать).
+          names=$( { find mkosi.profiles/test/extra/usr/lib/devuz mkosi.profiles/test/extra/usr/lib/systemd/system \
+                       mkosi.profiles/test/extra/usr/share/containers/systemd -maxdepth 1 -type f -printf '%f\n'
+                     printf '%s\n' DEVUZ-SELFTEST DEVUZ-UPDATE 50-devuz-test.conf; } | grep -vx selftest | sort -u)
+          for name in $names; do
+            # Имя, на которое законно ссылается боевой файл (например,
+            # devuz-support проверяет, есть ли support-allow-http), в боевом
+            # образе встретится всегда — такие имена этим grep не проверить.
+            if grep -rqF "$name" mkosi.extra; then echo "Пропускаю «$name»: на него ссылается боевой файл"; continue; fi
+            grep -qaF "$name" "$WORK/output/devuz_$DEVUZ_VERSION.raw" ||
+              { echo "::error::проверка не работает: «$name» не найден даже в тестовом образе"; rc=1; }
+            if grep -qaF "$name" "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw"; then
+              echo "::error::в боевом образе есть тестовое: $name"; rc=1
+            fi
+          done
+          echo "Проверено тестовых имён: $(wc -w <<<"$names")"
+          ! grep -qaF 'SmolLM2-135M' "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" ||
+            { echo "::error::в боевом образе тестовая модель"; rc=1; }
+          # И обратная проверка: тестовый образ правда другой.
+          objcopy -O binary --only-section=.cmdline "$WORK/output/devuz_$DEVUZ_VERSION.efi" "$WORK/test.cmdline"
+          ! grep -qw 'systemd.import_credentials=no' "$WORK/test.cmdline" ||
+            { echo "::error::тестовый UKI не принимает учётные данные — тесты бы не работали"; rc=1; }
+          echo "- боевой образ: тестовых служб нет, \`systemd.import_credentials=no\` в UKI" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Проверка пакетов
+        if: env.SABOTAGE == 'none'
+        run: |
+          python3 - "$WORK/output-prod/devuz_$DEVUZ_VERSION.manifest" <<'PY'
+          import json, os, sys
+          pkgs = {p["name"]: p["version"] for p in json.load(open(sys.argv[1]))["packages"]}
+          errors = []
+          if "dracut" in pkgs or "dracut-core" in pkgs:
+              errors.append("в образ попал dracut")
+          kernel = pkgs.get("linux-image-amd64", "нет")
+          pinned = os.environ.get("KERNEL_PINNED")
+          if pinned and kernel != pinned:
+              errors.append(f"ядро {kernel}, а в kernel.lock {pinned}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"## Пакеты\n- всего: {len(pkgs)}\n- linux-image-amd64: `{kernel}`"
+                      f" ({'из Release, по kernel.lock' if pinned else 'из backports, Release не найден'})\n")
+          for e in errors:
+              print(f"::error::{e}")
+          sys.exit(1 if errors else 0)
+          PY
+
+      - name: Проверка разметки
+        if: env.SABOTAGE == 'none'
+        run: |
+          echo "## Разметка" >>"$GITHUB_STEP_SUMMARY"
+          python3 tests/check-partitions.py "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" "$DEVUZ_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Тестовый реестр контейнеров (на раннере, для всех загрузок)
+        run: |
+          # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
+          # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
+          sudo ip addr replace 10.0.2.2/32 dev lo
+          # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
+          # загрузить свой профиль по умолчанию — запускаем реестр без него.
+          docker run -d --name devuz-registry --security-opt apparmor=unconfined \
+            -p 5000:5000 mirror.gcr.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
+          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
+          reg=10.0.2.2:5000/devuz/hello
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec "docker://$reg:signed"
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 "docker://$reg:unsigned"
+          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
+          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+            --allow-insecure-registry "$reg@$d"
+
+      - name: Тест загрузки (до сжатия)
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export EXPECT_VERSION="$DEVUZ_VERSION"
+          case "$SABOTAGE" in
+            no-kernel|unsigned) export TEST_TIMEOUT=300 ;;
+            emergency) export TEST_CRED=emergency TEST_TIMEOUT=300 ;;
+            corrupt-usr)
+              echo "::warning::Портим /usr в готовом образе — dm-verity должна не дать загрузиться"
+              python3 tests/corrupt-usr.py "$WORK/output/devuz_$DEVUZ_VERSION.raw"
+              export TEST_TIMEOUT=300 ;;
+          esac
+          tests/boot-test.sh
+
+      - name: Тест обновления A→B (systemd-sysupdate)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Вторая версия того же коммита: V.1. Собираем в свой каталог, кэш
+          # общий — пакеты второй раз не качаются.
+          next="$DEVUZ_VERSION.1"
+          mkdir -p "$WORK/output-next" "$WORK/serve-next"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-next" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
+                --profile=test --image-version="$next" -f build
+          python3 tests/publish-update.py "$WORK/output-next" "$next" "$WORK/serve-next"
+          gpg --batch --detach-sign --output "$WORK/serve-next/SHA256SUMS.gpg" "$WORK/serve-next/SHA256SUMS"
+          python3 -m http.server 8080 --directory "$WORK/serve-next" >"$WORK/http-next.log" 2>&1 &
+          # Запускаем образ V; служба теста ставит V.1 и перезагружается в неё.
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED="update,http://10.0.2.2:8080/,$next"
+          export EXPECT_VERSION="$next" LOG=update.log TEST_TIMEOUT=900
+          export TEST_TITLE="Тест обновления A→B"
+          rc=0; tests/boot-test.sh || rc=$?
+          grep -q 'DEVUZ-UPDATE INSTALLED' update.log || { echo "::error::sysupdate не поставил обновление"; rc=1; }
+          # Только вывод после DEVUZ-UPDATE START: подпись должна проверить
+          # сама установка, а не предварительный «list».
+          sed -n '/DEVUZ-UPDATE START/,$p' update.log >update-install.log
+          if grep -q 'Good signature' update-install.log; then
+            echo "- подпись SHA256SUMS.gpg проверена: \`$(grep -m1 -o 'Good signature.*' update-install.log)\`" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::нет «Good signature» — подпись обновления не проверялась"; rc=1
+          fi
+          echo "- запросы к серверу обновлений:" >>"$GITHUB_STEP_SUMMARY"
+          sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Тест ключей диска (TPM, чужой PCR 7, ключ восстановления)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=luks EXPECT_VERSION="$DEVUZ_VERSION" LOG=luks.log
+          export TEST_TITLE="Тест ключей диска"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in TPM_UNLOCK RECOVERY_ENROLLED LUKS_DISCARD PCR7_CHANGED_TPM_UNLOCK RECOVERY_OPEN; do
+            line=$(grep -m1 -o "DEVUZ-LUKS $k.*" luks.log || true)
+            echo "- ${line:-❌ нет DEVUZ-LUKS $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-LUKS OK' luks.log || { echo "::error::тест ключей диска не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест контейнеров (подписанный стартует, неподписанный — нет)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=containers EXPECT_VERSION="$DEVUZ_VERSION" LOG=containers.log
+          # Служба с неподписанным образом падает нарочно — это часть теста.
+          export ALLOW_FAILED_START=1 TEST_TITLE="Тест контейнеров"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in SIGNED_RUNNING UNSIGNED_REJECTED UNSIGNED_SERVICE_FAILED; do
+            line=$(grep -m1 -o "DEVUZ-CONTAINERS $k.*" containers.log || true)
+            echo "- ${line:-❌ нет DEVUZ-CONTAINERS $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-CONTAINERS OK' containers.log || { echo "::error::тест контейнеров не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест сторожа (убитая служба поднимается, вечно падающая — сигнал)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=watchdog EXPECT_VERSION="$DEVUZ_VERSION" LOG=watchdog.log
+          # Вечно падающая служба падает нарочно — это часть теста.
+          export ALLOW_FAILED_START=1 TEST_TITLE="Тест сторожа"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in KILLED_RESTARTED WATCHDOG_RESTARTED GAVE_UP NO_FALSE_ALERTS; do
+            line=$(grep -m1 -o "DEVUZ-WATCHDOG $k.*" watchdog.log || true)
+            echo "- ${line:-❌ нет DEVUZ-WATCHDOG $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-ALERT devuz-svc-demo-broken.service' watchdog.log ||
+            { echo "::error::нет строки DEVUZ-ALERT"; rc=1; }
+          grep -q 'DEVUZ-WATCHDOG OK' watchdog.log || { echo "::error::тест сторожа не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест служб (PostgreSQL и Caddy работают и переживают перезагрузку)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
+          export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED DB_PEER_ONLY CADDY_ADMIN_CLOSED HOSTNAME TIMESYNC_ENABLED UI_SLICE JOURNAL_PERSISTENT; do
+            line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
+            echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-SERVICES OK' services.log || { echo "::error::тест служб не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест канала поддержки (Headscale на раннере, кнопка вкл / выкл)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Тестовый Headscale на раннере: гость видит его как http://10.0.2.2:8085.
+          hs="$WORK/headscale"
+          mkdir -p "$hs/config" "$hs/lib" "$hs/run"
+          cat >"$hs/config/config.yaml" <<'YAML'
+          server_url: http://10.0.2.2:8085
+          listen_addr: 0.0.0.0:8085
+          metrics_listen_addr: 127.0.0.1:9090
+          grpc_listen_addr: 127.0.0.1:50443
+          noise:
+            private_key_path: /var/lib/headscale/noise_private.key
+          prefixes:
+            v4: 100.64.0.0/10
+            v6: fd7a:115c:a1e0::/48
+            allocation: sequential
+          derp:
+            server:
+              enabled: false
+            urls:
+              - https://controlplane.tailscale.com/derpmap/default
+            auto_update_enabled: false
+          disable_check_updates: true
+          database:
+            type: sqlite
+            sqlite:
+              path: /var/lib/headscale/db.sqlite
+          dns:
+            magic_dns: false
+            override_local_dns: false
+            base_domain: support.devuz.test
+          unix_socket: /var/run/headscale/headscale.sock
+          unix_socket_permission: "0770"
+          log:
+            level: info
+          YAML
+          docker run -d --name devuz-headscale --security-opt apparmor=unconfined -p 8085:8085 \
+            -v "$hs/config:/etc/headscale" -v "$hs/lib:/var/lib/headscale" -v "$hs/run:/var/run/headscale" \
+            ghcr.io/juanfont/headscale@sha256:ea9b5ee06274d757a4d52103de56cd11a9c393acb19d9a35f4b9fe52ada410de serve
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:8085/health >/dev/null && break; sleep 1; done
+          docker exec devuz-headscale headscale users create box
+          uid=$(docker exec devuz-headscale headscale users list -o json | jq -r '.[] | select(.name=="box") | .id')
+          key=$(docker exec devuz-headscale headscale preauthkeys create --user "$uid" --expiration 1h -o json | jq -r .key)
+          [ -n "$key" ] && [ "$key" != null ] || { echo "::error::Headscale не выдал ключ"; docker logs devuz-headscale; exit 1; }
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED="support,http://10.0.2.2:8085,$key" EXPECT_VERSION="$DEVUZ_VERSION" LOG=support.log
+          export TEST_TIMEOUT=600 TEST_TITLE="Тест канала поддержки"
+          rc=0; tests/boot-test.sh || rc=$?
+          # Ключ входа — одноразовый тестовый, но в журнал его не пускаем.
+          sed -i "s/$key/<ключ>/g" support.log
+          for k in OFF_BY_DEFAULT ON OFF JOURNAL ON_AGAIN EXTRA_FLAGS_REFUSED; do
+            line=$(grep -m1 -o "DEVUZ-SUPPORT-TEST $k .*" support.log || true)
+            echo "- ${line:-❌ нет DEVUZ-SUPPORT-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-SUPPORT-TEST OK' support.log || { echo "::error::тест канала поддержки не прошёл"; rc=1; }
+          echo "- Headscale видит коробку:" >>"$GITHUB_STEP_SUMMARY"
+          docker exec devuz-headscale headscale nodes list | sed 's/^/    /' >>"$GITHUB_STEP_SUMMARY"
+          docker exec devuz-headscale headscale nodes list | grep -q devuz-box ||
+            { echo "::error::коробка не вошла в Headscale"; rc=1; }
+          exit $rc
+
+      - name: Тест «Ядра» (токены, права, учёт, очередь)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=core EXPECT_VERSION="$DEVUZ_VERSION" LOG=core.log TEST_TITLE="Тест «Ядра»"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in NO_TOKEN_401 CHAT USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE QUEUE_FULL_429 TIMEOUT_504 ABORT GONE_SKIPPED USAGE_NO_TEXT BOX_CLASS; do
+            line=$(grep -m1 -o "DEVUZ-CORE-TEST $k .*" core.log || true)
+            echo "- ${line:-❌ нет DEVUZ-CORE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест моделей (подпись манифеста, настоящая модель через «Ядро»)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=models EXPECT_VERSION="$DEVUZ_VERSION" LOG=models.log TEST_TITLE="Тест моделей"
+          export TEST_TIMEOUT=900
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in MODEL_OK REAL_CHAT WEBUI_OFF STAMP_REUSED BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED; do
+            line=$(grep -m1 -o "DEVUZ-MODELS-TEST $k .*" models.log || true)
+            echo "- ${line:-❌ нет DEVUZ-MODELS-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-MODELS-TEST OK' models.log || { echo "::error::тест моделей не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест отката (битое обновление → 3 попытки → старая версия)
+        if: env.SABOTAGE == 'none'
+        run: |
+          bad="$DEVUZ_VERSION.2"
+          mkdir -p "$WORK/output-bad" "$WORK/serve-bad"
+          mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-bad" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
+                --profile=test --image-version="$bad" --environment=DEVUZ_TEST_BROKEN=1 -f build
+          python3 tests/publish-update.py "$WORK/output-bad" "$bad" "$WORK/serve-bad"
+          gpg --batch --detach-sign --output "$WORK/serve-bad/SHA256SUMS.gpg" "$WORK/serve-bad/SHA256SUMS"
+          python3 -m http.server 8081 --directory "$WORK/serve-bad" >"$WORK/http-bad.log" 2>&1 &
+          # V ставит «битую» V.2; та 3 раза не доходит до готовности,
+          # systemd-boot возвращает V — проверка должна закончиться на V.
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export ALLOW_FAILED_START=1
+          export TEST_CRED="update,http://10.0.2.2:8081/,$DEVUZ_VERSION"
+          export EXPECT_VERSION="$DEVUZ_VERSION" LOG=rollback.log TEST_TIMEOUT=900
+          export TEST_TITLE="Тест отката"
+          rc=0; tests/boot-test.sh || rc=$?
+          grep -q 'DEVUZ-UPDATE INSTALLED' rollback.log || { echo "::error::sysupdate не поставил «битую» версию"; rc=1; }
+          tries=$(grep -c 'DEVUZ-READY-BROKEN' rollback.log || true)
+          echo "- «битая» $bad не дошла до готовности: $tries раз(а)" >>"$GITHUB_STEP_SUMMARY"
+          [ "$tries" -ge 3 ] || { echo "::error::ожидалось 3 неудачные попытки, было $tries"; rc=1; }
+          grep -qE "UKI: devuz_${bad}\+0-[0-9]+\.efi" rollback.log ||
+            { echo "::error::UKI «битой» версии не помечен как плохой (+0-N)"; rc=1; }
+          exit $rc
+
+      - name: Сжатие и размеры
+        if: env.SABOTAGE == 'none'
+        run: |
+          cd "$WORK/output-prod"
+          {
+            echo "## Размеры"
+            echo "Сборка шла ${BUILD_SECONDS} с."
+            echo '```'
+            ls -la --block-size=K | grep -v '^total'
+          } >>"$GITHUB_STEP_SUMMARY"
+          for f in *.raw; do zstd -q -T0 -10 --rm "$f"; done
+          {
+            echo "--- после сжатия ---"
+            ls -la --block-size=K *.zst
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Разница пакетов с последней сборкой main
+        if: github.event_name == 'pull_request' && env.SABOTAGE == 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow build.yml --branch main \
+                   --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          echo "## Пакеты: разница с main" >>"$GITHUB_STEP_SUMMARY"
+          if [ -z "$run_id" ]; then
+            echo "Зелёной сборки main ещё нет — сравнивать не с чем." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p prev
+          if ! gh run download "$run_id" -R "$GITHUB_REPOSITORY" --pattern 'devuz-manifest-*' --dir prev; then
+            echo "Манифест сборки main не скачался." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          old_pkgs=$(mktemp); new_pkgs=$(mktemp)
+          python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
+            "$(find prev -name '*.manifest' | head -n1)" | sort >"$old_pkgs" || true
+          python3 -c 'import json,sys; [print(p["name"], p["version"]) for p in json.load(open(sys.argv[1]))["packages"]]' \
+            "$(find "$WORK/output-prod" -name '*.manifest' | head -n1)" | sort >"$new_pkgs" || true
+          {
+            echo '```diff'
+            diff -u "$old_pkgs" "$new_pkgs" | tail -n +3 || true
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Артефакт — образ
+        if: env.SABOTAGE == 'none'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # Боевых ключей ещё нет (неделя 8): образ подписан одноразовыми
+          # ключами этого прогона — ставить на коробку клиента нельзя.
+          name: devuz-image-${{ env.DEVUZ_VERSION }}-testkeys
+          path: |
+            /mnt/devuz/output-prod/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+          compression-level: 0
+          retention-days: 7
+
+      - name: Артефакт — UKI и разделы
+        if: env.SABOTAGE == 'none'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: devuz-parts-${{ env.DEVUZ_VERSION }}-testkeys
+          path: |
+            /mnt/devuz/output-prod/*.efi
+            /mnt/devuz/output-prod/*.raw.zst
+            !/mnt/devuz/output-prod/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
+          compression-level: 0
+          retention-days: 7
+
+      - name: Артефакт — манифест и журнал загрузки
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: devuz-manifest-${{ env.DEVUZ_VERSION }}
+          path: |
+            /mnt/devuz/output-prod/*.manifest
+            boot.log
+            update.log
+            luks.log
+            containers.log
+            watchdog.log
+            services.log
+            support.log
+            core.log
+            models.log
+            rollback.log
+          if-no-files-found: warn
+          retention-days: 7

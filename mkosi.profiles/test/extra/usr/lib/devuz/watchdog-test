@@ -1,0 +1,64 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест сторожа (только тестовый образ, режим devuz.test=watchdog):
+#  1. убитая служба поднимается сама;
+#  2. «зависшая» служба (не отвечает WatchdogSec=) перезапускается;
+#  3. служба, которая падает всегда, после 3 попыток — failed и один
+#     сигнал devuz-alert.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-WATCHDOG $*"; }
+fail=0
+prop() { systemctl show -p "$2" --value "$1"; }
+# Ждать до $2 секунд, пока команда $3... не станет истинной.
+wait_for() { local t=$1; shift; for _ in $(seq "$t"); do "$@" && return 0; sleep 1; done; return 1; }
+
+# 1. Убитая служба.
+systemctl start devuz-svc-demo.service
+pid=$(prop devuz-svc-demo.service MainPID)
+kill -9 "$pid"
+restarted() { [ "$(prop devuz-svc-demo.service NRestarts)" -ge 1 ] && systemctl is-active --quiet devuz-svc-demo.service; }
+if wait_for 20 restarted; then
+    say "KILLED_RESTARTED ok (было $pid, стало $(prop devuz-svc-demo.service MainPID))"
+else
+    say "ERROR убитая служба не поднялась"; fail=1
+fi
+systemctl stop devuz-svc-demo.service
+
+# 2. Зависшая служба.
+systemctl start devuz-svc-demo-hang.service
+hang_restarted() { [ "$(prop devuz-svc-demo-hang.service NRestarts)" -ge 1 ]; }
+if wait_for 30 hang_restarted && journalctl -b -u devuz-svc-demo-hang.service --no-pager | grep -q 'Watchdog timeout'; then
+    say "WATCHDOG_RESTARTED ok"
+else
+    say "ERROR зависшая служба не перезапущена сторожем"
+    journalctl -b -u devuz-svc-demo-hang.service --no-pager -n 20
+    fail=1
+fi
+systemctl stop devuz-svc-demo-hang.service
+
+# 3. Падает всегда.
+systemctl start devuz-svc-demo-broken.service || true
+alert=/var/lib/devuz/alerts/devuz-svc-demo-broken.service
+alerted() { [ -s "$alert" ] && [ "$(prop devuz-svc-demo-broken.service ActiveState)" = failed ]; }
+if wait_for 40 alerted; then
+    n=$(wc -l <"$alert")
+    say "GAVE_UP ok: попыток $(( $(prop devuz-svc-demo-broken.service NRestarts) + 1 )), сигналов $n"
+    [ "$n" -eq 1 ] || { say "ERROR сигналов $n, ждали 1"; fail=1; }
+else
+    say "ERROR нет сигнала devuz-alert для службы, которая падает всегда"
+    journalctl -b -u devuz-svc-demo-broken.service -u 'devuz-alert@*' --no-pager -n 30
+    fail=1
+fi
+# Поднявшиеся службы не должны звать человека.
+for u in devuz-svc-demo.service devuz-svc-demo-hang.service; do
+    if [ -e "/var/lib/devuz/alerts/$u" ]; then
+        say "ERROR сигнал для службы, которая поднялась: $u"; fail=1
+    fi
+done
+[ "$fail" -eq 0 ] && say "NO_FALSE_ALERTS ok"
+# Убрать за собой, чтобы самопроверка не считала это упавшей службой.
+systemctl reset-failed devuz-svc-demo-broken.service 2>/dev/null || true
+
+if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
+systemctl start --no-block devuz-selftest.service

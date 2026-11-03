@@ -1,0 +1,13 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# В образе нет root-раздела: /etc сборки не попадёт на диск. Сохраняем его
+# как заготовку /usr/share/factory/etc (она уезжает вместе с /usr, под
+# verity). На первой загрузке devuz-factory-etc.service копирует её в /etc.
+set -euo pipefail
+factory="$BUILDROOT/usr/share/factory/etc"
+rm -rf "$factory"
+mkdir -p "$(dirname "$factory")"
+cp -a "$BUILDROOT/etc" "$factory"
+# machine-id у каждой коробки свой — systemd создаст его сам.
+rm -f "$factory/machine-id"
+echo "Заготовка /etc: $(find "$factory" -mindepth 1 | wc -l) файлов и каталогов"

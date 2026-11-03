@@ -1,0 +1,74 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест обновления A/B (только для Actions). Запускает test-dispatch по
+# учётным данным devuz.test=update,<адрес сервера>,<ожидаемая версия>.
+# Логика: обновление ещё не ставили — ставим через systemd-sysupdate и
+# перезагружаемся. Уже ставили — сверяем версию и запускаем самопроверку.
+# Для теста отката ожидаемая версия — старая: «битая» новая не дойдёт до
+# готовности 3 раза, и systemd-boot вернёт старую.
+set -u
+say() { echo "DEVUZ-UPDATE $*"; }
+
+url="${1:-}" expect="${2:-}"
+. /usr/lib/os-release
+say "BOOT ${IMAGE_VERSION:-?} (ждём ${expect:-?})"
+
+# Состояние ESP: какие UKI лежат и с какими счётчиками.
+uki_dir=/boot/EFI/Linux
+[ -d "$uki_dir" ] || uki_dir=/efi/EFI/Linux
+ls -1 "$uki_dir" 2>/dev/null | sed 's/^/  UKI: /'
+
+# «Битая» версия в тесте отката: готовность упала, devuz-ready сама
+# перезагрузит машину (FailureAction=reboot) — ничего не делаем.
+if systemctl is-failed --quiet devuz-ready.service; then
+    say "READY FAILED на ${IMAGE_VERSION:-?} — ждём перезагрузку"
+    exit 0
+fi
+
+# В ESP только UKI текущей версии — обновление ещё не ставили: ставим.
+# Есть UKI другой версии — обновление уже было (успешное или откат):
+# проверяем, что загрузились в ожидаемую версию, и запускаем самопроверку.
+# Сравниваем имена без регулярных выражений: в версии есть точки.
+others=""
+for f in $(ls -1 "$uki_dir" 2>/dev/null); do
+    case "$f" in
+        "devuz_${IMAGE_VERSION}.efi" | "devuz_${IMAGE_VERSION}+"*.efi) ;;
+        *) others="$others $f" ;;
+    esac
+done
+if [ -n "$others" ]; then
+    if [ "${IMAGE_VERSION:-}" = "$expect" ]; then
+        say "DONE на ожидаемой версии ${IMAGE_VERSION} → самопроверка"
+    else
+        say "ERROR загрузилась ${IMAGE_VERSION:-?}, а ждали $expect"
+    fi
+    systemctl start --no-block devuz-selftest.service
+    exit 0
+fi
+
+[ -n "$url" ] || { say "ERROR не задан адрес сервера (devuz.test=update,<адрес>,<версия>)"; exit 1; }
+# Только тестовый сервер Actions (адрес хоста в сети QEMU user) и только
+# цифры в порту: адрес попадает в transfer-файлы, ничего другого туда
+# вписать нельзя (например, «\nVerify=no»).
+port=${url#http://10.0.2.2:}; port=${port%/}
+case "$port" in ''|*[!0-9]*) say "ERROR адрес не тестовый: $url"; exit 1 ;; esac
+[ "$url" = "http://10.0.2.2:$port/" ] || { say "ERROR адрес не тестовый: $url"; exit 1; }
+
+# Адрес сервера — через /etc/sysupdate.d (перекрывает /usr/lib/sysupdate.d).
+mkdir -p /etc/sysupdate.d
+for f in /usr/lib/sysupdate.d/*.transfer; do
+    sed "s|^Path=https://updates.devuz.invalid/os/|Path=${url}|" "$f" >"/etc/sysupdate.d/$(basename "$f")"
+done
+
+say "LIST"
+/usr/lib/systemd/systemd-sysupdate list || true
+say "START"
+if /usr/lib/systemd/systemd-sysupdate update; then
+    say "INSTALLED"
+    ls -1 "$uki_dir" | sed 's/^/  UKI: /'
+    systemctl reboot
+else
+    say "ERROR systemd-sysupdate update не прошёл"
+    systemctl poweroff --no-block
+    exit 1
+fi
