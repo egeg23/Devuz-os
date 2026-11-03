@@ -92,6 +92,13 @@ jobs:
           gpg --export >"$WORK/keys-tree/usr/lib/systemd/import-pubring.gpg"
           gpg --list-keys
           echo "GNUPGHOME=$GNUPGHOME" >>"$GITHUB_ENV"
+          # Ключ подписи моделей — отдельный (свой GNUPGHOME): им подписываются
+          # только манифесты моделей, не обновления.
+          export GNUPGHOME="$WORK/gnupg-models"
+          mkdir -p -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key "DevUz test models <noreply@devuz.invalid>" ed25519 sign 30d
+          mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
+          gpg --export >"$WORK/keys-tree/usr/lib/devuz/keys/models.gpg"
           echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/keys-tree" >>"$GITHUB_ENV"
 
       - name: Тестовый ключ подписи контейнеров cosign (на лету, никуда не сохраняется)
@@ -131,11 +138,12 @@ jobs:
           # Источники — по точному отпечатку (digest), а не по тегу: что
           # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
           # отпечатком (теги в именах справа: postgres 17, caddy 2,
-          # tailscale v1.84.3, node 22-bookworm-slim).
+          # tailscale v1.84.3, node 22-bookworm-slim, llama.cpp server-b12030 — CPU).
           for pair in "mirror.gcr.io/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1 devuz-postgres:17" \
                       "mirror.gcr.io/library/caddy@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e devuz-caddy:2" \
                       "ghcr.io/tailscale/tailscale@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e devuz-tailscale:v1.84.3" \
-                      "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22"; do
+                      "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22" \
+                      "ghcr.io/ggml-org/llama.cpp@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b devuz-llama:server"; do
             set -- $pair; src=$1; img=$2; repo=${img%%:*}
             skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
             d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
@@ -162,6 +170,25 @@ jobs:
           docker rm -f devuz-build-registry
           cat "$tree/images.list"; du -sh "$tree"
           echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/images-tree" >>"$GITHUB_ENV"
+
+      - name: Тестовая модель (только в тестовом образе)
+        run: |
+          # SmolLM2-135M-Instruct (Apache-2.0), 4 бита, ~100 МБ — работает на
+          # процессоре. Файл закреплён коммитом и sha256. Манифест подписываем
+          # тестовым ключом моделей; кладём в /usr тестового образа, тест сам
+          # копирует модель в /var/lib/devuz/models (боевые веса — не в /usr).
+          f=SmolLM2-135M-Instruct-Q4_K_M.gguf
+          sha=2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d
+          d="$WORK/test-models-tree/usr/share/devuz/test-models/smollm2-135m"
+          mkdir -p "$d"
+          curl -fsSL -o "$d/$f" "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/$f"
+          echo "$sha  $d/$f" | sha256sum --strict -c -
+          printf 'name: smollm2-135m\nversion: 1\nlicense: Apache-2.0\nformat: gguf\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
+          GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
+          cat "$d/MANIFEST"
+          # Только в MKOSI_DIRS (тестовая сборка и запуски); боевая сборка
+          # перечисляет свои деревья явно — модели в ней нет.
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/test-models-tree" >>"$GITHUB_ENV"
 
       - name: Пакеты для сборки (ядро из Release, без dracut)
         env:
@@ -228,6 +255,8 @@ jobs:
             fi
           done
           echo "Проверено тестовых имён: $(wc -w <<<"$names")"
+          ! grep -qaF 'SmolLM2-135M' "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" ||
+            { echo "::error::в боевом образе тестовая модель"; rc=1; }
           # И обратная проверка: тестовый образ правда другой.
           objcopy -O binary --only-section=.cmdline "$WORK/output/devuz_$DEVUZ_VERSION.efi" "$WORK/test.cmdline"
           ! grep -qw 'systemd.import_credentials=no' "$WORK/test.cmdline" ||
@@ -467,6 +496,21 @@ jobs:
           grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
           exit $rc
 
+      - name: Тест моделей (подпись манифеста, настоящая модель через «Ядро»)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=models EXPECT_VERSION="$DEVUZ_VERSION" LOG=models.log TEST_TITLE="Тест моделей"
+          export TEST_TIMEOUT=900
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in MODEL_OK REAL_CHAT BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED; do
+            line=$(grep -m1 -o "DEVUZ-MODELS-TEST $k .*" models.log || true)
+            echo "- ${line:-❌ нет DEVUZ-MODELS-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-MODELS-TEST OK' models.log || { echo "::error::тест моделей не прошёл"; rc=1; }
+          exit $rc
+
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
         if: env.SABOTAGE == 'none'
         run: |
@@ -578,6 +622,7 @@ jobs:
             services.log
             support.log
             core.log
+            models.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
