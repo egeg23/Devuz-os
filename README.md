@@ -55,15 +55,26 @@ mkosi vm
 Готовый образ из Actions (артефакт `devuz-image-…`) можно запустить и без
 mkosi — нужны `qemu-system-x86_64` и прошивка UEFI (пакет `ovmf`):
 
+Root создаётся при первой загрузке на свободном месте и шифруется ключом
+из TPM, поэтому нужны место на диске и виртуальный TPM (пакет `swtpm`):
+
 ```sh
 unzstd devuz_*.raw.zst
+truncate -s 16G devuz_<версия>.raw          # место под root
 cp /usr/share/OVMF/OVMF_VARS_4M.fd ./vars.fd
+mkdir -p tpm
+swtpm socket --tpm2 --tpmstate dir=./tpm --ctrl type=unixio,path=./tpm/sock &
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 2G -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=./vars.fd \
+  -chardev socket,id=chrtpm,path=./tpm/sock \
+  -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
   -drive if=virtio,format=raw,file=devuz_<версия>.raw \
   -nic user,model=virtio-net-pci
 ```
+
+Каталог `tpm/` храните вместе с образом: в нём ключ диска. Без него
+(или с другим) root не откроется.
 
 Появится экран входа с надписью «DevUz OS» и версией образа. Пользователей
 для входа пока нет — это следующие недели.
