@@ -85,6 +85,13 @@ else
     echo "DEVUZ-MODELS $name: подпись и хеши верны"
 fi
 if [ "$write" = 1 ]; then
-    mkdir -p /run/devuz/llm
-    printf 'LLAMA_ARG_MODEL=/models/%s/%s\n' "$name" "$first" >/run/devuz/llm/llm.env
+    # Ключ сервера модели — новый на каждую загрузку, читать может только
+    # root: так к модели ходит только «Ядро» (токены, очередь, учёт), а не
+    # любой процесс коробки с доступом к 127.0.0.1.
+    mkdir -p /run/devuz/llm /run/devuz/llm-key
+    chmod 700 /run/devuz/llm /run/devuz/llm-key
+    [ -s /run/devuz/llm-key/key ] ||
+        ( umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >/run/devuz/llm-key/key.new &&
+          mv /run/devuz/llm-key/key.new /run/devuz/llm-key/key )
+    ( umask 077; printf 'LLAMA_ARG_MODEL=/models/%s/%s\nLLAMA_API_KEY=%s\n' "$name" "$first" "$(cat /run/devuz/llm-key/key)" >/run/devuz/llm/llm.env )
 fi

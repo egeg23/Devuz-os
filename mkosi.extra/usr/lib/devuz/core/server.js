@@ -50,7 +50,7 @@ function checkTasks(t) {
     const u = new URL(b.url); // бросит на кривом адресе
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`бэкенд «${name}»: только http или https`);
     const int = (v, d, min) => (v === undefined ? d : Number.isInteger(v) && v >= min ? v : NaN);
-    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000 };
+    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000, keyFile: typeof b.key_file === "string" ? b.key_file : null };
     if ([be.concurrency, be.maxQueue, be.timeoutMs, be.maxWaitMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s, max_wait_s — целые числа`);
     backends.set(name, be);
   }
@@ -259,7 +259,11 @@ async function chat(req, res, app) {
     body = null;
     const url = new URL(be.url + "/chat/completions");
     const mod = url.protocol === "https:" ? https : http;
-    const up = mod.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": out.length } }, (r) => {
+    const hdr = { "content-type": "application/json", "content-length": out.length };
+    // Ключ бэкенда (сервер модели пускает только «Ядро») — читаем при каждом
+    // запросе: он новый на каждую загрузку коробки.
+    if (be.keyFile) { try { hdr.authorization = "Bearer " + fs.readFileSync(be.keyFile, "utf8").trim(); } catch {} }
+    const up = mod.request(url, { method: "POST", headers: hdr }, (r) => {
       res.writeHead(r.statusCode || 502, { "content-type": r.headers["content-type"] || "application/json", "x-devuz-task": task, "x-devuz-priority": prio });
       const sse = stream ? sseUsage() : null;
       const chunks = []; let size = 0;
