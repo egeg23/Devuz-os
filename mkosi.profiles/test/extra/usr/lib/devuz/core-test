@@ -81,6 +81,15 @@ else
 fi
 [ "$d" = 429 ] && grep -qi '^retry-after:' /tmp/core.Dh && say "QUEUE_FULL_429 ok" || { say "ERROR полная очередь: $d $(cat /tmp/core.D)"; fail=1; }
 
+#    Модель занята дольше max_wait_s (3 с в тестовой таблице) — ждущий
+#    получает 503 с Retry-After, а не висит.
+ask "$t_night" "sleep:4 hold" >/dev/null & a=$!
+sleep 0.5
+t0=$(date +%s); c=$(curl -s -m 10 -o /tmp/core.W -D /tmp/core.Wh -w '%{http_code}' -H "authorization: Bearer $t_staff" -H 'content-type: application/json' \
+    -d '{"model":"chat","messages":[{"role":"user","content":"W"}]}' "$api/chat/completions"); dt=$(( $(date +%s) - t0 ))
+wait $a
+[ "$c" = 503 ] && [ "$dt" -le 5 ] && grep -qi '^retry-after:' /tmp/core.Wh && say "QUEUE_WAIT_503 ok: ${dt} с" || { say "ERROR долгое ожидание в очереди: $c за ${dt} с $(cat /tmp/core.W)"; fail=1; }
+
 # 5. Модель молчит — 504 через timeout_s (5 с в тестовой таблице).
 t0=$(date +%s); c=$(ask "$t_staff" "silent"); dt=$(( $(date +%s) - t0 ))
 [ "$c" = 504 ] && [ "$dt" -le 10 ] && say "TIMEOUT_504 ok: ${dt} с" || { say "ERROR модель молчит: $c за ${dt} с"; fail=1; }

@@ -50,8 +50,8 @@ function checkTasks(t) {
     const u = new URL(b.url); // бросит на кривом адресе
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`бэкенд «${name}»: только http или https`);
     const int = (v, d, min) => (v === undefined ? d : Number.isInteger(v) && v >= min ? v : NaN);
-    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000 };
-    if ([be.concurrency, be.maxQueue, be.timeoutMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s — целые числа`);
+    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000 };
+    if ([be.concurrency, be.maxQueue, be.timeoutMs, be.maxWaitMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s, max_wait_s — целые числа`);
     backends.set(name, be);
   }
   const tasks = new Map();
@@ -96,14 +96,20 @@ function loadApps(prev) {
   const prevById = new Map([...(prev || new Map()).entries()].map(([h, a]) => [a.id, [h, a]]));
   let names = [];
   try { names = fs.readdirSync(APPS_DIR).filter((n) => n.endsWith(".json")); } catch { return apps; }
-  for (const n of names) {
+  const owner = new Map(); // отпечаток токена -> файл
+  const dups = new Set();
+  for (const n of names.sort()) {
     const id = n.slice(0, -5);
     try {
       const a = JSON.parse(fs.readFileSync(path.join(APPS_DIR, n), "utf8"));
       if (!a || typeof a.token_sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(a.token_sha256) || !Array.isArray(a.tasks))
         throw new Error("нет token_sha256 или tasks");
       const prio = PRIORITIES.includes(a.priority) ? a.priority : "night";
-      apps.set(a.token_sha256.toLowerCase(), { id, tasks: new Set(a.tasks.filter((t) => typeof t === "string")), priority: prio });
+      const h = a.token_sha256.toLowerCase();
+      // Один токен в двух файлах — непонятно, чьи права: не пускаем ни одного.
+      if (owner.has(h)) { log("ОШИБКА: один токен в", owner.get(h), "и", n, "— оба отключены"); dups.add(h); continue; }
+      owner.set(h, n);
+      apps.set(h, { id, tasks: new Set(a.tasks.filter((t) => typeof t === "string")), priority: prio });
     } catch (e) {
       // Битый файл при перечитывании не отнимает у приложения доступ.
       const old = prevById.get(id);
@@ -111,6 +117,7 @@ function loadApps(prev) {
       if (old) apps.set(old[0], old[1]);
     }
   }
+  for (const h of dups) apps.delete(h);
   return apps;
 }
 
@@ -129,21 +136,24 @@ function pump(name) {
   const q = queue(name);
   const be = TASKS.backends.get(name);
   const limit = be ? be.concurrency : 1;
-  while (q.running < limit && q.waiting.length) { q.running++; q.waiting.shift().resolve(); }
+  while (q.running < limit && q.waiting.length) { q.running++; const w = q.waiting.shift(); clearTimeout(w.timer); w.resolve(true); }
 }
-// Встать в очередь. null — очередь полна (ответить 429).
+// Встать в очередь. null — очередь полна (ответить 429). w.ready даёт true —
+// очередь дошла, false — ждали дольше max_wait_s (ответить 503, а не висеть:
+// модель может быть занята одним длинным ответом сколько угодно).
 function enqueue(name, prio) {
   const q = queue(name);
   const be = TASKS.backends.get(name);
   if (q.waiting.length >= be.maxQueue && q.running >= be.concurrency) return null;
   const w = { rank: PRIORITIES.indexOf(prio), seq: process.hrtime.bigint(), since: Date.now() };
   w.ready = new Promise((resolve) => { w.resolve = resolve; });
+  w.timer = setTimeout(() => { cancel(name, w); w.resolve(false); }, be.maxWaitMs);
   q.waiting.push(w);
   q.waiting.sort((a, b) => a.rank - b.rank || (a.seq < b.seq ? -1 : 1));
   pump(name);
   return w;
 }
-function cancel(name, w) { const q = queue(name); const i = q.waiting.indexOf(w); if (i >= 0) q.waiting.splice(i, 1); }
+function cancel(name, w) { clearTimeout(w.timer); const q = queue(name); const i = q.waiting.indexOf(w); if (i >= 0) q.waiting.splice(i, 1); }
 function release(name) { const q = queue(name); if (q.running > 0) q.running--; pump(name); }
 
 // --- ответы в формате OpenAI
@@ -228,8 +238,13 @@ async function chat(req, res, app) {
   let gone = false;
   const onGone = () => { gone = true; cancel(bname, w); };
   res.on("close", onGone);
-  await w.ready;
+  const ok = await w.ready;
   res.off("close", onGone);
+  if (!ok) {
+    usage({ ts: new Date().toISOString(), app: app.id, task, model: route.model, prio, wait_ms: Date.now() - t0, ms: Date.now() - t0, status: 503 });
+    if (!gone && !res.destroyed) fail(res, 503, "overloaded_error", `очередь не дошла за ${be.maxWaitMs / 1000} с, повторите позже`, { "retry-after": "10" });
+    return;
+  }
   if (gone || res.destroyed) { release(bname); return; }
 
   const waited = Date.now() - t0;

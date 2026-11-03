@@ -488,7 +488,7 @@ jobs:
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=core EXPECT_VERSION="$DEVUZ_VERSION" LOG=core.log TEST_TITLE="Тест «Ядра»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in NO_TOKEN_401 CHAT USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE QUEUE_FULL_429 TIMEOUT_504 ABORT GONE_SKIPPED USAGE_NO_TEXT BOX_CLASS; do
+          for k in NO_TOKEN_401 CHAT USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE QUEUE_FULL_429 QUEUE_WAIT_503 TIMEOUT_504 ABORT GONE_SKIPPED USAGE_NO_TEXT BOX_CLASS; do
             line=$(grep -m1 -o "DEVUZ-CORE-TEST $k .*" core.log || true)
             echo "- ${line:-❌ нет DEVUZ-CORE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
