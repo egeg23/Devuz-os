@@ -64,12 +64,14 @@ while read -r k a b c rest || [ -n "${k:-}" ]; do
             [ -f "$f" ] && [ ! -L "$f" ] || fail "нет файла $c"
             [ "$(stat -c %s "$f")" = "$b" ] || fail "$c: размер $(stat -c %s "$f"), в манифесте $b"
             [ "$fresh" = 1 ] || [ "$(hash_of "$f")" = "$a" ] || fail "$c: sha256 не совпал с манифестом"
-            listed[$c]=1; [ -n "$first" ] || first=$c ;;
+            # Сервер модели получает файл весов (.gguf), а не первый в списке:
+            # в манифесте могут быть и другие файлы (токенизатор и т. п.).
+            listed[$c]=1; [ -n "$first" ] || [[ "$c" != *.gguf ]] || first=$c ;;
         *) fail "неизвестное поле манифеста «$k»" ;;
     esac
 done <"$dir/MANIFEST"
 [ "$mname" = "$name" ] || fail "в манифесте имя «$mname», а каталог «$name»"
-[ -n "$first" ] || fail "в манифесте нет файлов"
+[ -n "$first" ] || fail "в манифесте нет файла весов .gguf"
 for f in "$dir"/*; do
     b=${f##*/}
     case "$b" in MANIFEST|MANIFEST.sig) continue ;; esac
@@ -78,7 +80,8 @@ done
 if [ "$fresh" = 1 ]; then
     echo "DEVUZ-MODELS $name: подпись верна, файлы не менялись с прошлой проверки (штамп)"
 else
-    mkdir -p "$stamps"; printf '%s\n' "$want_stamp" >"$stamps/$name"
+    # --check ничего не пишет — и штамп тоже.
+    [ "$write" = 0 ] || { mkdir -p "$stamps"; printf '%s\n' "$want_stamp" >"$stamps/$name"; }
     echo "DEVUZ-MODELS $name: подпись и хеши верны"
 fi
 if [ "$write" = 1 ]; then

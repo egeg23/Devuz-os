@@ -21,3 +21,10 @@ if [ -s "$data/PG_VERSION" ]; then
         exit 1
     fi
 fi
+# Данные, созданные ранними сборками (до аудита В), могли остаться со
+# входом «trust» (без пароля для любого процесса с доступом к сокету).
+# Такую базу не запускаем: в коробках её нет, но молча стартовать нельзя.
+if [ -s "$data/pg_hba.conf" ] && grep -Eq '^[[:space:]]*[^#[:space:]].*[[:space:]]trust[[:space:]]*$' "$data/pg_hba.conf"; then
+    echo "DEVUZ-ALERT PostgreSQL: в $data/pg_hba.conf есть вход «trust» — служба не запущена. Замените trust на peer/scram-sha-256."
+    exit 1
+fi

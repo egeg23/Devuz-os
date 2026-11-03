@@ -33,7 +33,10 @@ Volume=/var/lib/devuz/postgres:/var/lib/postgresql/data
 Volume=/run/devuz/postgres:/var/run/postgresql
 HealthCmd=pg_isready -h /var/run/postgresql
 HealthInterval=10s
-HealthStartPeriod=60s
+# После сбоя питания PostgreSQL сначала восстанавливает журнал и отвечает
+# «не готов»: проверка здоровья не должна убивать его посреди этого.
+HealthStartPeriod=540s
+HealthRetries=6
 HealthOnFailure=kill
 Notify=healthy
 
