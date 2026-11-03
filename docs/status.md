@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 | Образ Debian 13 + mkosi v27.1, systemd-boot + UKI, `/usr` на erofs, тест загрузки в Actions | ✅ `docs/week-01.md` |
 | 2 | Ядро из Release по `kernel.lock`, dm-verity, счёт загрузок, `systemd-sysupdate` A→B, тест отката | ✅ `docs/week-02.md` |
-| 3 | Secure Boot, подписи UKI / verity / обновлений, LUKS2 + TPM, root при первой загрузке | ▶ план `docs/plans/week-03.md` |
+| 3 | Secure Boot, подписанные обновления, root при первой загрузке (LUKS2 + TPM), боевой образ без учётных данных | ✅ `docs/week-03.md` |
 
 ## Как устроено (одной строкой каждое)
 
