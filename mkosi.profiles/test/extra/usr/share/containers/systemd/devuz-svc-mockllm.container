@@ -12,5 +12,9 @@ Network=host
 Volume=/usr/lib/devuz/mock-llm.js:/mock-llm.js:ro
 Exec=node /mock-llm.js
 
+[Service]
+# Модель — в фоновый ломоть, как будет у настоящих моделей.
+Slice=devuz-ai.slice
+
 [Install]
 WantedBy=multi-user.target

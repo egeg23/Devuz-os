@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Caddy — вход в коробку: https://box.local в сети офиса, свой сертификат
-# коробки (tls internal, корневой — в /var/lib/devuz/caddy). Контейнер с
-# нашей подписью, под сторожем (имя devuz-svc-*).
+# Caddy — вход в коробку: https://devuz.local в сети офиса, свой сертификат
+# коробки (tls internal, корневой — в /var/lib/devuz/caddy, каталог 0700).
+# Контейнер с нашей подписью, под сторожем (имя devuz-svc-*). Единственная
+# служба, которая смотрит в сеть офиса, — поэтому с минимумом прав.
 [Unit]
 Wants=devuz-images.service
 After=devuz-images.service
@@ -15,14 +16,24 @@ Pull=never
 Network=host
 Volume=/usr/share/devuz/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
 Volume=/var/lib/devuz/caddy:/data
-HealthCmd=wget -q -O /dev/null http://127.0.0.1:2019/config/
+DropCapability=all
+AddCapability=NET_BIND_SERVICE
+NoNewPrivileges=true
+ReadOnly=true
+Tmpfs=/config
+HealthCmd=wget -q -O /dev/null http://127.0.0.1:2080/
 HealthInterval=10s
 HealthStartPeriod=30s
 HealthOnFailure=kill
 Notify=healthy
+# Нехватка памяти — убивать не нас, а модель (devuz-ai.slice).
+PodmanArgs=--oom-score-adj=-900
 
 [Service]
 ExecStartPre=/usr/bin/mkdir -p /var/lib/devuz/caddy
+ExecStartPre=/usr/bin/chmod 700 /var/lib/devuz/caddy
+# Интерфейс важнее ИИ: свой ломоть с высоким весом и защищённой памятью.
+Slice=devuz-ui.slice
 TimeoutStartSec=600
 
 [Install]
