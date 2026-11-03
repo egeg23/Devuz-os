@@ -293,7 +293,7 @@ jobs:
           # Вечно падающая служба падает нарочно — это часть теста.
           export ALLOW_FAILED_START=1 TEST_TITLE="Тест сторожа"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in KILLED_RESTARTED WATCHDOG_RESTARTED GAVE_UP; do
+          for k in KILLED_RESTARTED WATCHDOG_RESTARTED GAVE_UP NO_FALSE_ALERTS; do
             line=$(grep -m1 -o "DEVUZ-WATCHDOG $k.*" watchdog.log || true)
             echo "- ${line:-❌ нет DEVUZ-WATCHDOG $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

@@ -50,6 +50,13 @@ else
     journalctl -b -u devuz-svc-demo-broken.service -u 'devuz-alert@*' --no-pager -n 30
     fail=1
 fi
+# Поднявшиеся службы не должны звать человека.
+for u in devuz-svc-demo.service devuz-svc-demo-hang.service; do
+    if [ -e "/var/lib/devuz/alerts/$u" ]; then
+        say "ERROR сигнал для службы, которая поднялась: $u"; fail=1
+    fi
+done
+[ "$fail" -eq 0 ] && say "NO_FALSE_ALERTS ok"
 # Убрать за собой, чтобы самопроверка не считала это упавшей службой.
 systemctl reset-failed devuz-svc-demo-broken.service 2>/dev/null || true
 
