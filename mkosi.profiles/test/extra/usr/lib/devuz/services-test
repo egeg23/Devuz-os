@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Тест служб (только тестовый образ, режим devuz.test=services):
-# первая загрузка — PostgreSQL и Caddy поднялись (подписанные контейнеры),
+# первая загрузка — PostgreSQL и Caddy поднялись из образов в /usr (без сети),
 # запрос в базу и https работают, пишем строку в базу и перезагружаемся;
 # вторая — службы снова работают, строка на месте. Потом самопроверка.
 set -u
@@ -18,6 +18,13 @@ for u in devuz-svc-postgres.service devuz-svc-caddy.service; do
         say "ERROR не поднялась $u:"; journalctl -b -u "$u" --no-pager -n 30; fail=1
     fi
 done
+
+# Образы — из /usr, без сети: реестр сборки к этому времени погашен, а у
+# служб Pull=never.
+if [ ! -e "$mark" ]; then
+    n=$(journalctl -b -u devuz-images.service --no-pager | grep -c 'загружен из /usr' || true)
+    if [ "$n" -ge 3 ]; then say "IMAGES_FROM_USR ok: $n образа из /usr, сеть не нужна"; else say "ERROR из /usr загружено образов: $n"; fail=1; fi
+fi
 
 r=$(psql 'select 40 + 2' 2>&1)
 if [ "$r" = 42 ]; then say "POSTGRES_QUERY ok"; else say "ERROR запрос в базу: $r"; fail=1; fi

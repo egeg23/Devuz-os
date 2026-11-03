@@ -3,11 +3,15 @@
 # коробки (tls internal, корневой — в /var/lib/devuz/caddy). Контейнер с
 # нашей подписью, под сторожем (имя devuz-svc-*).
 [Unit]
+Wants=devuz-images.service
+After=devuz-images.service
 Description=DevUz: Caddy (вход https)
 
 [Container]
 ContainerName=devuz-caddy
-Image=registry.devuz.invalid/devuz/caddy:2
+Image=ghcr.io/egeg23/devuz-caddy:2
+# Образ лежит в /usr (devuz-images.service); из сети не тянем.
+Pull=never
 Network=host
 Volume=/usr/share/devuz/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
 Volume=/var/lib/devuz/caddy:/data

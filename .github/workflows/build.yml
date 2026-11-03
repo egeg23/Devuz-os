@@ -108,6 +108,41 @@ jobs:
           mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
           cp "$WORK/cosign/cosign.pub" "$WORK/keys-tree/usr/lib/devuz/keys/containers.pub"
 
+      - name: Образы служб — в /usr (подпись проверяется при сборке)
+        run: |
+          # Коробке не нужен интернет: образы служб едут в /usr (под verity).
+          # Здесь их подписываем (имя — наш реестр ghcr.io/egeg23), проверяем
+          # подпись той же политикой, что на коробке, и кладём архивами в
+          # /usr/share/devuz/images. Реестр сборки после этого гасим: гостю
+          # брать службы из сети негде — тест служб это и проверяет.
+          sudo ip addr replace 10.0.2.2/32 dev lo
+          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
+          docker run -d --name devuz-build-registry --security-opt apparmor=unconfined \
+            -p 5001:5000 mirror.gcr.io/library/registry:2
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:5001/v2/ >/dev/null && break; sleep 1; done
+          cfg="$WORK/images-verify"; tree="$WORK/images-tree/usr/share/devuz/images"
+          mkdir -p "$cfg/registries.d" "$tree"
+          sed "s#/usr/lib/devuz/keys/containers.pub#$WORK/cosign/cosign.pub#" \
+            mkosi.extra/etc/containers/policy.json >"$cfg/policy.json"
+          cp mkosi.extra/etc/containers/registries.d/default.yaml "$cfg/registries.d/"
+          printf '[[registry]]\nprefix = "ghcr.io/egeg23"\nlocation = "10.0.2.2:5001"\ninsecure = true\n' >"$cfg/registries.conf"
+          : >"$tree/images.list"
+          for pair in "mirror.gcr.io/library/postgres:17 devuz-postgres:17" \
+                      "mirror.gcr.io/library/caddy:2 devuz-caddy:2" \
+                      "ghcr.io/tailscale/tailscale:v1.84.3 devuz-tailscale:v1.84.3"; do
+            set -- $pair; src=$1; img=$2; repo=${img%%:*}
+            skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
+            d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
+            COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+              --allow-insecure-registry --sign-container-identity "ghcr.io/egeg23/$repo" "10.0.2.2:5001/$repo@$d"
+            skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
+              copy --src-tls-verify=false "docker://ghcr.io/egeg23/$img" "oci-archive:$tree/$repo.tar"
+            echo "$repo.tar ghcr.io/egeg23/$img $(sha256sum <"$tree/$repo.tar" | cut -d' ' -f1)" >>"$tree/images.list"
+          done
+          docker rm -f devuz-build-registry
+          cat "$tree/images.list"; du -sh "$tree"
+          echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/images-tree" >>"$GITHUB_ENV"
+
       - name: Пакеты для сборки (ядро из Release, без dracut)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -141,7 +176,7 @@ jobs:
           # строкой ядра; проверки ниже — что отличия именно такие.
           mkdir -p "$WORK/output-prod"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-prod" \
-                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
                 --image-version="$DEVUZ_VERSION" -f build
           ls -la "$WORK/output-prod"
 
@@ -197,7 +232,7 @@ jobs:
         run: |
           # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
           # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
-          sudo ip addr add 10.0.2.2/32 dev lo
+          sudo ip addr replace 10.0.2.2/32 dev lo
           # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
           # загрузить свой профиль по умолчанию — запускаем реестр без него.
           docker run -d --name devuz-registry --security-opt apparmor=unconfined \
@@ -210,17 +245,6 @@ jobs:
           d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
           COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
             --allow-insecure-registry "$reg@$d"
-          # Службы коробки: в образе — боевые имена registry.devuz.invalid/devuz/…,
-          # тестовый профиль берёт их отсюда. Подпись — на боевое имя.
-          for src in mirror.gcr.io/library/postgres:17 mirror.gcr.io/library/caddy:2 ghcr.io/tailscale/tailscale:v1.84.3; do
-            img=${src##*/}
-            name=${img%%:*}
-            skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5000/devuz/$img"
-            d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5000/devuz/$img")
-            COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
-              --allow-insecure-registry --sign-container-identity "registry.devuz.invalid/devuz/$name" \
-              "10.0.2.2:5000/devuz/$name@$d"
-          done
 
       - name: Тест загрузки (до сжатия)
         run: |
@@ -244,7 +268,7 @@ jobs:
           next="$DEVUZ_VERSION.1"
           mkdir -p "$WORK/output-next" "$WORK/serve-next"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-next" \
-                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
                 --profile=test --image-version="$next" -f build
           python3 tests/publish-update.py "$WORK/output-next" "$next" "$WORK/serve-next"
           gpg --batch --detach-sign --output "$WORK/serve-next/SHA256SUMS.gpg" "$WORK/serve-next/SHA256SUMS"
@@ -324,7 +348,7 @@ jobs:
           export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
           export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED; do
+          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED; do
             line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
             echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
@@ -401,7 +425,7 @@ jobs:
           bad="$DEVUZ_VERSION.2"
           mkdir -p "$WORK/output-bad" "$WORK/serve-bad"
           mkosi --cache-directory="$WORK/cache" --output-directory="$WORK/output-bad" \
-                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" \
+                --workspace-directory="$WORK/workspace" --extra-tree="$WORK/keys-tree" --extra-tree="$WORK/images-tree" \
                 --profile=test --image-version="$bad" --environment=DEVUZ_TEST_BROKEN=1 -f build
           python3 tests/publish-update.py "$WORK/output-bad" "$bad" "$WORK/serve-bad"
           gpg --batch --detach-sign --output "$WORK/serve-bad/SHA256SUMS.gpg" "$WORK/serve-bad/SHA256SUMS"

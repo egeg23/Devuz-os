@@ -5,13 +5,17 @@
 # зайти никак. Адрес сервера и ключ входа — /etc/devuz/support.env
 # (заводская настройка, неделя 8). Контейнер с нашей подписью, под сторожем.
 [Unit]
+Wants=devuz-images.service
+After=devuz-images.service
 Description=DevUz: канал поддержки (Tailscale)
 ConditionPathExists=/var/lib/devuz/support-on
 ConditionPathExists=/etc/devuz/support.env
 
 [Container]
 ContainerName=devuz-tailscale
-Image=registry.devuz.invalid/devuz/tailscale:v1.84.3
+Image=ghcr.io/egeg23/devuz-tailscale:v1.84.3
+# Образ лежит в /usr (devuz-images.service); из сети не тянем.
+Pull=never
 Network=host
 AddDevice=/dev/net/tun
 AddCapability=NET_ADMIN NET_RAW
