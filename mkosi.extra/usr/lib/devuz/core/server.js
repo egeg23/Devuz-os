@@ -4,8 +4,8 @@
 // (сокет — для приложений в песочнице без сети, недели 6–7).
 //
 // API v1 (совместим с OpenAI):
-//   GET  /v1/health            — живо ли «Ядро» (без токена);
-//   GET  /v1/models            — задачи, доступные этому токену;
+//   GET  /v1/health            — живо ли «Ядро» и длина очередей (без токена);
+//   GET  /v1/models[/<id>]     — задачи, доступные этому токену;
 //   POST /v1/chat/completions  — model = задача («chat», «chat-uz», «code»…),
 //                                 «Ядро» само выбирает модель по таблице коробки.
 // Токен приложения — Authorization: Bearer <токен>. На коробке хранится
@@ -13,74 +13,127 @@
 //   {"token_sha256": "...", "tasks": ["chat"], "priority": "staff"}
 // Приоритеты очереди: live > chat > staff > night. Приложение может только
 // понизить свой приоритет (заголовок X-DevUz-Priority), но не повысить.
-// Учёт: /var/lib/devuz/core/usage.jsonl — кто, задача, токены, время.
+// Очередь на бэкенд ограничена (max_queue): лишний запрос сразу получает 429
+// с Retry-After, а не ждёт бесконечно — коробка не «тормозит у всех».
+// Учёт: /var/lib/devuz/core/usage-ГГГГ-ММ-ДД.jsonl — кто, задача, токены,
+// время. Текст запросов и ответов не пишется никуда.
 // Облако выключено: задачи ведут только на адреса из таблицы коробки.
 "use strict";
 const http = require("node:http");
+const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const TASKS_FILES = ["/etc/devuz/core/tasks.json", "/usr/share/devuz/core/tasks.json"];
+const TASKS_ETC = "/etc/devuz/core/tasks.json";
+const TASKS_USR = "/usr/share/devuz/core/tasks.json";
 const APPS_DIR = "/etc/devuz/core/apps.d";
-const USAGE = "/var/lib/devuz/core/usage.jsonl";
+const USAGE_DIR = "/var/lib/devuz/core";
 const SOCK = "/run/devuz/core/core.sock";
 const PRIORITIES = ["live", "chat", "staff", "night"];
+const BODY_LIMIT = 2 << 20; // 2 МБ: текстовым задачам больше не нужно
+const USAGE_BUF_LIMIT = 1 << 20; // буферизуем обычный ответ для учёта не больше 1 МБ
 
 function log(...a) { console.log("DEVUZ-CORE", ...a); }
 
-function loadTasks() {
-  for (const f of TASKS_FILES) {
-    try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { if (e.code !== "ENOENT") log("ошибка в", f, e.message); }
+// --- настройки: битый файл не подменяется молча другим
+function checkTasks(t) {
+  if (!t || typeof t !== "object" || !t.backends || typeof t.backends !== "object" || !t.tasks || typeof t.tasks !== "object")
+    throw new Error("нужны объекты backends и tasks");
+  const backends = new Map();
+  for (const [name, b] of Object.entries(t.backends)) {
+    if (!b || typeof b.url !== "string") throw new Error(`у бэкенда «${name}» нет url`);
+    const u = new URL(b.url); // бросит на кривом адресе
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`бэкенд «${name}»: только http или https`);
+    const int = (v, d, min) => (v === undefined ? d : Number.isInteger(v) && v >= min ? v : NaN);
+    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000 };
+    if ([be.concurrency, be.maxQueue, be.timeoutMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s — целые числа`);
+    backends.set(name, be);
   }
-  return { backends: {}, tasks: {} };
+  const tasks = new Map();
+  for (const [name, r] of Object.entries(t.tasks)) {
+    if (!r || !backends.has(r.backend) || typeof r.model !== "string") throw new Error(`задача «${name}»: нет такого бэкенда или model`);
+    tasks.set(name, { backend: r.backend, model: r.model });
+  }
+  return { backends, tasks };
 }
 
-function loadApps() {
+function loadTasks(prev) {
+  // /etc (таблица этой коробки) главнее /usr (заводская). Если в /etc файл
+  // есть, но битый — заводскую НЕ берём: оставляем прежнюю таблицу, а при
+  // старте работаем без задач и громко пишем в журнал.
+  const f = fs.existsSync(TASKS_ETC) ? TASKS_ETC : TASKS_USR;
+  try {
+    return checkTasks(JSON.parse(fs.readFileSync(f, "utf8")));
+  } catch (e) {
+    log("ОШИБКА в", f, "—", e.message, prev ? "(оставляю прежнюю таблицу)" : "(задач нет, пока файл не исправят)");
+    return prev || { backends: new Map(), tasks: new Map() };
+  }
+}
+
+function loadApps(prev) {
   const apps = new Map();
+  const prevById = new Map([...(prev || new Map()).entries()].map(([h, a]) => [a.id, [h, a]]));
   let names = [];
   try { names = fs.readdirSync(APPS_DIR).filter((n) => n.endsWith(".json")); } catch { return apps; }
   for (const n of names) {
+    const id = n.slice(0, -5);
     try {
       const a = JSON.parse(fs.readFileSync(path.join(APPS_DIR, n), "utf8"));
-      if (typeof a.token_sha256 !== "string" || !Array.isArray(a.tasks)) throw new Error("нет token_sha256 или tasks");
+      if (!a || typeof a.token_sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(a.token_sha256) || !Array.isArray(a.tasks))
+        throw new Error("нет token_sha256 или tasks");
       const prio = PRIORITIES.includes(a.priority) ? a.priority : "night";
-      apps.set(a.token_sha256.toLowerCase(), { id: n.slice(0, -5), tasks: new Set(a.tasks), priority: prio });
-    } catch (e) { log("пропускаю", n, e.message); }
+      apps.set(a.token_sha256.toLowerCase(), { id, tasks: new Set(a.tasks.filter((t) => typeof t === "string")), priority: prio });
+    } catch (e) {
+      // Битый файл при перечитывании не отнимает у приложения доступ.
+      const old = prevById.get(id);
+      log("ОШИБКА в приложении", n, "—", e.message, old ? "(оставляю прежнее)" : "(пропускаю)");
+      if (old) apps.set(old[0], old[1]);
+    }
   }
   return apps;
 }
 
-let TASKS = loadTasks();
-let APPS = loadApps();
-process.on("SIGHUP", () => { TASKS = loadTasks(); APPS = loadApps(); log("настройки перечитаны"); });
+let TASKS = loadTasks(null);
+let APPS = loadApps(null);
+process.on("SIGHUP", () => { TASKS = loadTasks(TASKS); APPS = loadApps(APPS); log("настройки перечитаны"); });
 
 // --- очередь: по одной на каждый бэкенд, с ограничением одновременных вызовов
-const queues = new Map(); // backend -> {running, limit, waiting: []}
-function acquire(backend, limit, prio) {
-  let q = queues.get(backend);
-  if (!q) { q = { running: 0, limit, waiting: [] }; queues.set(backend, q); }
-  q.limit = limit;
-  if (q.running < q.limit && q.waiting.length === 0) { q.running++; return Promise.resolve(); }
-  return new Promise((resolve) => {
-    q.waiting.push({ rank: PRIORITIES.indexOf(prio), seq: process.hrtime.bigint(), resolve });
-    q.waiting.sort((a, b) => a.rank - b.rank || (a.seq < b.seq ? -1 : 1));
-  });
+const queues = new Map(); // backend -> {running, waiting: []}
+function queue(name) {
+  let q = queues.get(name);
+  if (!q) { q = { running: 0, waiting: [] }; queues.set(name, q); }
+  return q;
 }
-function release(backend) {
-  const q = queues.get(backend);
-  if (!q) return;
-  const next = q.waiting.shift();
-  if (next) next.resolve(); else q.running--;
+function pump(name) {
+  const q = queue(name);
+  const be = TASKS.backends.get(name);
+  const limit = be ? be.concurrency : 1;
+  while (q.running < limit && q.waiting.length) { q.running++; q.waiting.shift().resolve(); }
 }
+// Встать в очередь. null — очередь полна (ответить 429).
+function enqueue(name, prio) {
+  const q = queue(name);
+  const be = TASKS.backends.get(name);
+  if (q.waiting.length >= be.maxQueue && q.running >= be.concurrency) return null;
+  const w = { rank: PRIORITIES.indexOf(prio), seq: process.hrtime.bigint(), since: Date.now() };
+  w.ready = new Promise((resolve) => { w.resolve = resolve; });
+  q.waiting.push(w);
+  q.waiting.sort((a, b) => a.rank - b.rank || (a.seq < b.seq ? -1 : 1));
+  pump(name);
+  return w;
+}
+function cancel(name, w) { const q = queue(name); const i = q.waiting.indexOf(w); if (i >= 0) q.waiting.splice(i, 1); }
+function release(name) { const q = queue(name); if (q.running > 0) q.running--; pump(name); }
 
 // --- ответы в формате OpenAI
-function send(res, code, obj) {
+function send(res, code, obj, extra) {
+  if (res.headersSent || res.destroyed) return;
   const body = JSON.stringify(obj);
-  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) });
+  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body), ...extra });
   res.end(body);
 }
-function fail(res, code, type, message) { send(res, code, { error: { type, message, code } }); }
+function fail(res, code, type, message, extra) { send(res, code, { error: { type, message, code: type } }, extra); }
 
 function auth(req) {
   const h = req.headers.authorization || "";
@@ -89,30 +142,52 @@ function auth(req) {
   return APPS.get(crypto.createHash("sha256").update(m[1]).digest("hex")) || null;
 }
 
-function readBody(req, limit = 8 << 20) {
+function readBody(req, limit) {
   return new Promise((resolve, reject) => {
-    const parts = []; let size = 0;
-    req.on("data", (c) => { size += c.length; if (size > limit) { reject(new Error("слишком большой запрос")); req.destroy(); } else parts.push(c); });
-    req.on("end", () => resolve(Buffer.concat(parts)));
+    const parts = []; let size = 0; let over = false;
+    req.on("data", (c) => { if (over) return; size += c.length; if (size > limit) { over = true; reject(Object.assign(new Error("слишком большой запрос"), { tooLarge: true })); } else parts.push(c); });
+    req.on("end", () => { if (!over) resolve(Buffer.concat(parts)); });
     req.on("error", reject);
   });
 }
 
+// --- учёт: файл на каждый день, каталог создан при старте
+try { fs.mkdirSync(USAGE_DIR, { recursive: true }); } catch (e) { log("ОШИБКА каталог учёта:", e.message); }
 function usage(rec) {
-  fs.mkdir(path.dirname(USAGE), { recursive: true }, () => {
-    fs.appendFile(USAGE, JSON.stringify(rec) + "\n", () => {});
-  });
+  const f = path.join(USAGE_DIR, `usage-${rec.ts.slice(0, 10)}.jsonl`);
+  fs.appendFile(f, JSON.stringify(rec) + "\n", (e) => { if (e) log("ОШИБКА учёт:", e.message); });
+}
+
+// Токены из потока SSE: берём последний кусок с "usage" (его шлёт бэкенд при
+// stream_options.include_usage), держим в памяти только хвост, не весь ответ.
+function sseUsage() {
+  let tail = ""; let u = null;
+  return {
+    feed(c) {
+      tail += c.toString("utf8");
+      const lines = tail.split("\n"); tail = lines.pop().slice(-65536);
+      for (const l of lines) if (l.startsWith("data:") && l.includes('"usage"')) { try { u = JSON.parse(l.slice(5)).usage || u; } catch {} }
+    },
+    get() { return u || {}; },
+  };
 }
 
 async function chat(req, res, app) {
+  let raw;
+  try { raw = await readBody(req, BODY_LIMIT); } catch (e) {
+    if (e.tooLarge) { fail(res, 413, "invalid_request_error", `запрос больше ${BODY_LIMIT >> 20} МБ`, { connection: "close" }); req.resume(); return; }
+    throw e;
+  }
   let body;
-  try { body = JSON.parse((await readBody(req)).toString("utf8")); } catch (e) { return fail(res, 400, "invalid_request_error", "тело запроса — не JSON: " + e.message); }
+  try { body = JSON.parse(raw.toString("utf8")); } catch (e) { return fail(res, 400, "invalid_request_error", "тело запроса — не JSON: " + e.message); }
+  raw = null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return fail(res, 400, "invalid_request_error", "тело запроса — не объект JSON");
   const task = body.model;
-  const route = TASKS.tasks[task];
-  if (!route) return fail(res, 404, "not_found_error", `задачи «${task}» на этой коробке нет`);
+  if (typeof task !== "string" || !TASKS.tasks.has(task)) return fail(res, 404, "not_found_error", `задачи «${String(task)}» на этой коробке нет`);
   if (!app.tasks.has(task)) return fail(res, 403, "permission_error", `приложению «${app.id}» задача «${task}» не разрешена`);
-  const be = TASKS.backends[route.backend];
-  if (!be) return fail(res, 503, "unavailable", `нет бэкенда «${route.backend}»`);
+  const route = TASKS.tasks.get(task);
+  const be = TASKS.backends.get(route.backend);
+  const bname = route.backend;
 
   // Приоритет: не выше, чем у приложения.
   let prio = app.priority;
@@ -120,43 +195,106 @@ async function chat(req, res, app) {
   if (PRIORITIES.includes(asked) && PRIORITIES.indexOf(asked) > PRIORITIES.indexOf(prio)) prio = asked;
 
   const t0 = Date.now();
-  await acquire(route.backend, be.concurrency || 1, prio);
-  const waited = Date.now() - t0;
-  const out = Buffer.from(JSON.stringify({ ...body, model: route.model }));
-  const url = new URL(be.url.replace(/\/+$/, "") + "/chat/completions");
-  let done = false;
-  const finish = (rec) => { if (done) return; done = true; release(route.backend); usage({ ts: new Date().toISOString(), app: app.id, task, model: route.model, prio, wait_ms: waited, ms: Date.now() - t0, ...rec }); };
+  const w = enqueue(bname, prio);
+  if (!w) {
+    usage({ ts: new Date().toISOString(), app: app.id, task, model: route.model, prio, wait_ms: 0, ms: 0, status: 429 });
+    return fail(res, 429, "rate_limit_error", "коробка занята, повторите позже", { "retry-after": "5" });
+  }
+  // Клиент ушёл, пока ждал в очереди, — убираем его, модель зря не гоняем.
+  let gone = false;
+  const onGone = () => { gone = true; cancel(bname, w); };
+  res.on("close", onGone);
+  await w.ready;
+  res.off("close", onGone);
+  if (gone || res.destroyed) { release(bname); return; }
 
-  const up = http.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": out.length } }, (r) => {
-    const chunks = [];
-    res.writeHead(r.statusCode || 502, { "content-type": r.headers["content-type"] || "application/json", "x-devuz-task": task, "x-devuz-priority": prio });
-    r.on("data", (c) => { chunks.push(c); res.write(c); });
-    r.on("end", () => {
-      res.end();
-      let u = {};
-      try { u = JSON.parse(Buffer.concat(chunks).toString("utf8")).usage || {}; } catch { /* поток SSE — токены не считаем */ }
-      finish({ status: r.statusCode, prompt_tokens: u.prompt_tokens ?? null, completion_tokens: u.completion_tokens ?? null });
+  const waited = Date.now() - t0;
+  let done = false;
+  const finish = (rec) => { if (done) return; done = true; release(bname); usage({ ts: new Date().toISOString(), app: app.id, task, model: route.model, prio, wait_ms: waited, ms: Date.now() - t0, ...rec }); };
+
+  try {
+    const stream = body.stream === true;
+    const fwd = { ...body, model: route.model };
+    if (stream) fwd.stream_options = { ...(body.stream_options || {}), include_usage: true };
+    const out = Buffer.from(JSON.stringify(fwd));
+    body = null;
+    const url = new URL(be.url + "/chat/completions");
+    const mod = url.protocol === "https:" ? https : http;
+    const up = mod.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": out.length } }, (r) => {
+      res.writeHead(r.statusCode || 502, { "content-type": r.headers["content-type"] || "application/json", "x-devuz-task": task, "x-devuz-priority": prio });
+      const sse = stream ? sseUsage() : null;
+      const chunks = []; let size = 0;
+      r.on("data", (c) => {
+        if (sse) sse.feed(c);
+        else if ((size += c.length) <= USAGE_BUF_LIMIT) chunks.push(c);
+        if (!res.write(c)) { r.pause(); res.once("drain", () => r.resume()); }
+      });
+      r.on("end", () => {
+        if (!r.complete) return; // обрыв — разберётся "close"
+        res.end();
+        let u = {};
+        if (sse) u = sse.get();
+        else if (size <= USAGE_BUF_LIMIT) { try { u = JSON.parse(Buffer.concat(chunks).toString("utf8")).usage || {}; } catch {} }
+        finish({ status: r.statusCode, prompt_tokens: u.prompt_tokens ?? null, completion_tokens: u.completion_tokens ?? null });
+      });
+      r.on("close", () => {
+        if (r.complete) return;
+        // Бэкенд оборвал ответ посреди — клиенту честный обрыв, а не вечное ожидание.
+        finish({ status: 502 });
+        res.destroy();
+      });
     });
-    r.on("error", () => finish({ status: 502 }));
-  });
-  up.on("error", (e) => { finish({ status: 503 }); if (!res.headersSent) fail(res, 503, "unavailable", "модель недоступна: " + e.message); else res.end(); });
-  res.on("close", () => { if (!done) up.destroy(); });
-  up.end(out);
+    // Бэкенд молчит дольше timeout_s (до первого байта или между кусками) — обрыв.
+    up.setTimeout(be.timeoutMs, () => up.destroy(Object.assign(new Error(`модель молчит дольше ${be.timeoutMs / 1000} с`), { timeout: true })));
+    up.on("error", (e) => {
+      const code = e.timeout ? 504 : 503;
+      finish({ status: code });
+      if (!res.headersSent) fail(res, code, "unavailable", "модель недоступна: " + e.message);
+      else res.destroy();
+    });
+    res.on("close", () => { if (!done) { up.destroy(); finish({ status: 499 }); } });
+    up.end(out);
+  } catch (e) {
+    finish({ status: 500 });
+    throw e;
+  }
+}
+
+function health(res) {
+  const q = {};
+  const now = Date.now();
+  for (const [name, x] of queues) q[name] = { running: x.running, waiting: x.waiting.length, oldest_wait_s: x.waiting.length ? Math.round((now - Math.min(...x.waiting.map((w) => w.since))) / 1000) : 0 };
+  send(res, 200, { status: "ok", api: "v1", tasks: TASKS.tasks.size, queues: q });
 }
 
 async function handle(req, res) {
   const url = new URL(req.url, "http://core");
-  if (req.method === "GET" && url.pathname === "/v1/health") return send(res, 200, { status: "ok", api: "v1" });
+  if (req.method === "GET" && url.pathname === "/v1/health") return health(res);
   const app = auth(req);
-  if (!app) return fail(res, 401, "authentication_error", "нужен токен приложения (Authorization: Bearer …)");
-  if (req.method === "GET" && url.pathname === "/v1/models")
-    return send(res, 200, { object: "list", data: [...app.tasks].filter((t) => TASKS.tasks[t]).map((t) => ({ id: t, object: "model", owned_by: "devuz" })) });
+  if (!app) return fail(res, 401, "authentication_error", "нужен токен приложения (Authorization: Bearer …)", { "www-authenticate": "Bearer" });
+  const mine = () => [...app.tasks].filter((t) => TASKS.tasks.has(t));
+  const model = (t) => ({ id: t, object: "model", owned_by: "devuz" });
+  if (req.method === "GET" && url.pathname === "/v1/models") return send(res, 200, { object: "list", data: mine().map(model) });
+  if (req.method === "GET" && url.pathname.startsWith("/v1/models/")) {
+    const id = decodeURIComponent(url.pathname.slice("/v1/models/".length));
+    return mine().includes(id) ? send(res, 200, model(id)) : fail(res, 404, "not_found_error", `задачи «${id}» нет`);
+  }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return chat(req, res, app);
   return fail(res, 404, "not_found_error", "нет такого метода в API v1");
 }
 
-const server = http.createServer((req, res) => handle(req, res).catch((e) => { log("ошибка", e.stack); if (!res.headersSent) fail(res, 500, "api_error", "внутренняя ошибка"); }));
+const onRequest = (req, res) => handle(req, res).catch((e) => { log("ошибка", e.stack); fail(res, 500, "api_error", "внутренняя ошибка"); });
+const server = http.createServer(onRequest);
 server.listen(8090, "127.0.0.1", () => log("слушаю 127.0.0.1:8090"));
 try { fs.mkdirSync(path.dirname(SOCK), { recursive: true }); fs.rmSync(SOCK, { force: true }); } catch {}
-const sockServer = http.createServer((req, res) => handle(req, res).catch(() => fail(res, 500, "api_error", "внутренняя ошибка")));
+const sockServer = http.createServer(onRequest);
 sockServer.listen(SOCK, () => { fs.chmodSync(SOCK, 0o666); log("слушаю", SOCK); });
+
+// Node в контейнере — PID 1: без своего обработчика SIGTERM игнорируется,
+// и каждый stop ждал бы 10 с до SIGKILL.
+process.on("SIGTERM", () => {
+  log("останавливаюсь");
+  server.close(); sockServer.close();
+  setTimeout(() => process.exit(0), 5000).unref();
+  server.closeIdleConnections?.(); sockServer.closeIdleConnections?.();
+});

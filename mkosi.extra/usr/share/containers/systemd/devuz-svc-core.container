@@ -23,10 +23,17 @@ HealthInterval=10s
 HealthStartPeriod=20s
 HealthOnFailure=kill
 Notify=healthy
+# Разбирает ввод приложений — ограничен сильнее всех: без прав ядра,
+# корень контейнера только для чтения.
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
 
 [Service]
 ExecStartPre=/usr/bin/mkdir -p /etc/devuz/core/apps.d /var/lib/devuz/core /run/devuz/core
 TimeoutStartSec=120
+# systemctl reload devuz-svc-core — перечитать таблицу задач и приложения.
+ExecReload=/usr/bin/podman kill --signal HUP devuz-core
 
 [Install]
 WantedBy=multi-user.target
