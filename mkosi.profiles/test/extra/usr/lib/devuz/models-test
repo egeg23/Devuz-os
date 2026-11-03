@@ -58,8 +58,9 @@ bad() { # имя ключ команда-порчи
     if systemctl start "$llm" 2>/dev/null || systemctl is-active --quiet "$llm"; then
         say "ERROR модель $name загрузилась"; fail=1; systemctl stop "$llm"
     else
-        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F "DEVUZ-MODELS ERROR $name" | tail -n1)
-        if [ -n "$why" ]; then say "$key ok: ${why#DEVUZ-MODELS ERROR }"; else say "ERROR $name: не загрузилась, но причины в журнале нет"; fail=1; fi
+        # Отказ должен быть именно по подписи (BAD signature), а не по любой ошибке.
+        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F "DEVUZ-MODELS ERROR $name" | grep -F 'BAD signature' | tail -n1)
+        if [ -n "$why" ]; then say "$key ok: ${why#DEVUZ-MODELS ERROR }"; else say "ERROR $name: отказ не по подписи: $(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F "ERROR $name" | tail -n1)"; fail=1; fi
     fi
     rm -rf "${models:?}/$name"
 }
