@@ -4,6 +4,7 @@
 #   selftest                         — самопроверка;
 #   update,<адрес сервера>,<версия>  — тест обновления A/B (см. update-test);
 #   luks                             — ключи диска: TPM, чужой PCR 7, ключ восстановления;
+#   containers                       — подписанный контейнер стартует, неподписанный нет;
 #   emergency                        — ручная проверка теста: уйти в аварийный режим.
 set -u
 cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
@@ -13,6 +14,7 @@ case "$mode" in
     selftest) systemctl start --no-block devuz-selftest.service ;;
     update)   exec /usr/lib/devuz/update-test "$arg1" "$arg2" ;;
     luks)     exec /usr/lib/devuz/luks-test ;;
+    containers) exec /usr/lib/devuz/containers-test ;;
     emergency) systemctl --no-block isolate emergency.target ;;
     *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
 esac

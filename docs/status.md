@@ -11,6 +11,7 @@
 | 1 | Образ Debian 13 + mkosi v27.1, systemd-boot + UKI, `/usr` на erofs, тест загрузки в Actions | ✅ `docs/week-01.md` |
 | 2 | Ядро из Release по `kernel.lock`, dm-verity, счёт загрузок, `systemd-sysupdate` A→B, тест отката | ✅ `docs/week-02.md` |
 | 3 | Secure Boot, подписанные обновления, root при первой загрузке (LUKS2 + TPM), боевой образ без учётных данных | ✅ `docs/week-03.md` |
+| 4 | Службы: Podman + quadlet с подписью контейнеров, сторож, PostgreSQL, Caddy, канал поддержки | ▶ план `docs/plans/week-04.md` |
 
 ## Как устроено (одной строкой каждое)
 
@@ -27,6 +28,8 @@
 - Ручные режимы `build.yml` (`sabotage`): `no-kernel`, `emergency`, `corrupt-usr`, `unsigned` (должны быть красными).
 - Ключи: тестовые генерируются в Actions на лету (`mkosi genkey`), в репозитории ключей нет никогда.
 - Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`).
+
+- Контейнеры: Podman (Debian 13) + quadlet. `/etc/containers/policy.json` — по умолчанию отказ, из любого реестра только образ с нашей sigstore-подписью (`matchRepository`), ключ `/usr/lib/devuz/keys/containers.pub` (в Actions — тестовый cosign 2.4 на лету, через `--extra-tree`). Тестовый реестр — `registry:2` на раннере, `10.0.2.2:5000` (адрес повешен и на `lo` раннера).
 
 ## Грабли, на которые уже наступили
 
