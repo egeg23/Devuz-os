@@ -104,7 +104,7 @@ jobs:
           sudo install -m 755 /tmp/cosign-linux-amd64 /usr/local/bin/cosign
           mkdir -p "$WORK/cosign"
           (cd "$WORK/cosign" && COSIGN_PASSWORD= cosign generate-key-pair)
-          # Открытый ключ — в образ (политика /etc/containers/policy.json его ждёт).
+          # Открытый ключ — в образ (политика /usr/share/devuz/containers/policy.json его ждёт).
           mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
           cp "$WORK/cosign/cosign.pub" "$WORK/keys-tree/usr/lib/devuz/keys/containers.pub"
 
@@ -123,8 +123,8 @@ jobs:
           cfg="$WORK/images-verify"; tree="$WORK/images-tree/usr/share/devuz/images"
           mkdir -p "$cfg/registries.d" "$tree"
           sed "s#/usr/lib/devuz/keys/containers.pub#$WORK/cosign/cosign.pub#" \
-            mkosi.extra/etc/containers/policy.json >"$cfg/policy.json"
-          cp mkosi.extra/etc/containers/registries.d/default.yaml "$cfg/registries.d/"
+            mkosi.extra/usr/share/devuz/containers/policy.json >"$cfg/policy.json"
+          cp mkosi.extra/usr/share/devuz/containers/registries.d/default.yaml "$cfg/registries.d/"
           printf '[[registry]]\nprefix = "ghcr.io/egeg23"\nlocation = "10.0.2.2:5001"\ninsecure = true\n' >"$cfg/registries.conf"
           : >"$tree/images.list"
           for pair in "mirror.gcr.io/library/postgres:17 devuz-postgres:17" \
@@ -138,7 +138,11 @@ jobs:
               --allow-insecure-registry --sign-container-identity "ghcr.io/egeg23/$repo" "10.0.2.2:5001/$repo@$d"
             skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
               copy --remove-signatures --src-tls-verify=false "docker://ghcr.io/egeg23/$img" "oci-archive:$tree/$repo.tar"
-            echo "$repo.tar ghcr.io/egeg23/$img $(sha256sum <"$tree/$repo.tar" | cut -d' ' -f1)" >>"$tree/images.list"
+            # ID образа = sha256 его конфигурации: по нему коробка при каждой
+            # загрузке сверяет, что под именем службы лежит именно этот образ.
+            iid=$(skopeo inspect --raw "oci-archive:$tree/$repo.tar" | jq -r .config.digest)
+            [[ "$iid" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::нет ID образа $repo"; exit 1; }
+            echo "$repo.tar ghcr.io/egeg23/$img $(sha256sum <"$tree/$repo.tar" | cut -d' ' -f1) ${iid#sha256:}" >>"$tree/images.list"
           done
           # Проверка, что политика при сборке правда работает: неподписанный образ
           # в архив не попадает. (В oci-archive подписи не хранятся —
@@ -200,11 +204,21 @@ jobs:
           echo "Строка ядра боевого UKI: $(tr -d '\0' <"$WORK/prod.cmdline")"
           grep -qw 'systemd.import_credentials=no' "$WORK/prod.cmdline" ||
             { echo "::error::в боевом UKI нет systemd.import_credentials=no"; rc=1; }
-          for name in devuz-test.service devuz-selftest.service DEVUZ-SELFTEST DEVUZ-UPDATE; do
+          # Имена всех тестовых программ и юнитов (их список — из профиля test)
+          # плюс строки тестов. Положительный контроль: в тестовом образе каждое
+          # имя находится — иначе grep ничего не доказывает (например, если
+          # /usr начнут сжимать).
+          names=$( { find mkosi.profiles/test/extra/usr/lib/devuz mkosi.profiles/test/extra/usr/lib/systemd/system \
+                       mkosi.profiles/test/extra/usr/share/containers/systemd -maxdepth 1 -type f -printf '%f\n'
+                     printf '%s\n' DEVUZ-SELFTEST DEVUZ-UPDATE 50-devuz-test.conf; } | grep -vx selftest | sort -u)
+          for name in $names; do
+            grep -qaF "$name" "$WORK/output/devuz_$DEVUZ_VERSION.raw" ||
+              { echo "::error::проверка не работает: «$name» не найден даже в тестовом образе"; rc=1; }
             if grep -qaF "$name" "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw"; then
               echo "::error::в боевом образе есть тестовое: $name"; rc=1
             fi
           done
+          echo "Проверено тестовых имён: $(wc -w <<<"$names")"
           # И обратная проверка: тестовый образ правда другой.
           objcopy -O binary --only-section=.cmdline "$WORK/output/devuz_$DEVUZ_VERSION.efi" "$WORK/test.cmdline"
           ! grep -qw 'systemd.import_credentials=no' "$WORK/test.cmdline" ||
@@ -359,7 +373,7 @@ jobs:
           export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
           export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED; do
+          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED; do
             line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
             echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
@@ -418,7 +432,7 @@ jobs:
           rc=0; tests/boot-test.sh || rc=$?
           # Ключ входа — одноразовый тестовый, но в журнал его не пускаем.
           sed -i "s/$key/<ключ>/g" support.log
-          for k in OFF_BY_DEFAULT ON OFF JOURNAL; do
+          for k in OFF_BY_DEFAULT ON OFF JOURNAL ON_AGAIN EXTRA_FLAGS_REFUSED; do
             line=$(grep -m1 -o "DEVUZ-SUPPORT-TEST $k .*" support.log || true)
             echo "- ${line:-❌ нет DEVUZ-SUPPORT-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

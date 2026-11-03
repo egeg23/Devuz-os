@@ -3,7 +3,11 @@
 # ВЫКЛЮЧЕН: включает и выключает только кнопка — devuz-support on/off
 # (метка /var/lib/devuz/support-on). Выключено — клиента нет, к коробке не
 # зайти никак. Адрес сервера и ключ входа — /etc/devuz/support.env
-# (заводская настройка, неделя 8). Контейнер с нашей подписью, под сторожем.
+# (SUPPORT_SERVER=https://…, SUPPORT_KEY=…; заводская настройка, неделя 8).
+# Клиенту передаются только они (devuz-support prepare): маршрутов, выхода
+# в интернет, SSH, прокси канал не открывает — флаги задаёт этот файл.
+# Диагностика в Tailscale Inc. не отправляется (--no-logs-no-support).
+# Контейнер с нашей подписью, под сторожем, с минимумом прав.
 [Unit]
 Wants=devuz-images.service
 After=devuz-images.service
@@ -18,10 +22,16 @@ Image=ghcr.io/egeg23/devuz-tailscale:v1.84.3
 Pull=never
 Network=host
 AddDevice=/dev/net/tun
+DropCapability=all
 AddCapability=NET_ADMIN NET_RAW
+NoNewPrivileges=true
+ReadOnly=true
 Volume=/var/lib/devuz/tailscale:/var/lib/tailscale
-EnvironmentFile=/etc/devuz/support.env
+EnvironmentFile=/run/devuz/support/ts.env
 Environment=TS_STATE_DIR=/var/lib/tailscale TS_USERSPACE=false TS_ACCEPT_DNS=false TS_HOSTNAME=devuz-box
+# Ключ входа нужен только первый раз; дальше — ключ узла из TS_STATE_DIR.
+Environment=TS_AUTH_ONCE=true
+Environment=TS_TAILSCALED_EXTRA_ARGS=--no-logs-no-support
 HealthCmd=tailscale status --peers=false
 HealthInterval=10s
 HealthStartPeriod=60s
@@ -30,6 +40,12 @@ Notify=healthy
 
 [Service]
 ExecStartPre=/usr/bin/mkdir -p /var/lib/devuz/tailscale
+ExecStartPre=/usr/bin/chmod 700 /var/lib/devuz/tailscale
+ExecStartPre=/usr/bin/devuz-support prepare
+# Каждый фактический запуск и остановку клиента видно в журнале клиента,
+# даже если он поднялся сам после перезагрузки.
+ExecStartPost=/usr/bin/devuz-support event "клиент поддержки запущен"
+ExecStopPost=/usr/bin/devuz-support event "клиент поддержки остановлен"
 TimeoutStartSec=300
 
 [Install]

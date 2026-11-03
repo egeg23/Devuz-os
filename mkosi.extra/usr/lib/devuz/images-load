@@ -1,22 +1,33 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Загрузить образы служб из /usr/share/devuz/images в хранилище Podman.
-# images.list: «<архив> <имя образа> <sha256 архива>». Подпись проверена при
-# сборке; здесь архивы доверенные, потому что лежат в /usr под verity
-# (политика: oci-archive только из /usr/share/devuz/images).
-# Метка /var/lib/devuz/images/<архив>.sha — эта версия уже загружена.
-set -eu
+# images.list: «<архив> <имя образа> <sha256 архива> <ID образа>». Подпись
+# проверена при сборке; архивы доверенные, потому что лежат в /usr под
+# verity (политика: oci-archive только из /usr/share/devuz/images).
+# При КАЖДОЙ загрузке сверяем, что под именем службы лежит именно образ
+# из /usr (ID = sha256 его конфигурации). Подменили образ в хранилище —
+# загружаем заново и перевешиваем имя: подмена не переживает перезагрузку
+# и обновление. Битый архив не мешает остальным; старые образы убираем.
+set -u
 dir=/usr/share/devuz/images
-state=/var/lib/devuz/images
-mkdir -p "$state"
-while read -r tar name sha; do
+fail=0
+while read -r tar name sha want; do
     [ -n "$tar" ] || continue
-    if [ "$(cat "$state/$tar.sha" 2>/dev/null)" = "$sha" ] && podman image exists "$name"; then
+    have=$(podman image inspect --format '{{.Id}}' "$name" 2>/dev/null || true)
+    if [ -n "$want" ] && [ "$have" = "$want" ]; then
         echo "DEVUZ-IMAGES $name уже загружен"
         continue
     fi
-    id=$(podman pull -q "oci-archive:$dir/$tar")
-    podman tag "$id" "$name"
-    echo "$sha" >"$state/$tar.sha"
+    [ -z "$have" ] || echo "DEVUZ-IMAGES $name в хранилище не тот (${have:0:12} вместо ${want:0:12}) — загружаю из /usr"
+    if ! id=$(podman pull -q "oci-archive:$dir/$tar"); then
+        echo "DEVUZ-IMAGES ERROR $tar не загрузился"; fail=1; continue
+    fi
+    if [ -n "$want" ] && [ "$id" != "$want" ]; then
+        echo "DEVUZ-IMAGES ERROR $tar: ID ${id:0:12}, ждали ${want:0:12}"; fail=1; continue
+    fi
+    podman tag "$id" "$name" || { echo "DEVUZ-IMAGES ERROR не удалось назвать $name"; fail=1; continue; }
     echo "DEVUZ-IMAGES $name загружен из /usr"
 done <"$dir/images.list"
+# Образы прошлых версий без имени — убрать (место на диске).
+podman image prune -f >/dev/null 2>&1 || true
+exit $fail
