@@ -4,14 +4,18 @@
 # приложения ходят через сокет в /run/devuz/postgres. Данные — на
 # зашифрованном root, /var/lib/devuz/postgres.
 # Имя devuz-svc-* — под сторожем (devuz-svc-.service.d/10-watchdog.conf).
-# Реестр registry.devuz.invalid — заглушка до решения владельца; в тесте его
-# подменяет registries.conf тестового профиля.
+# Образ — в /usr (под verity), коробке не нужен интернет; имя — в нашем
+# реестре ghcr.io/egeg23 (оттуда — только обновления).
 [Unit]
+Wants=devuz-images.service
+After=devuz-images.service
 Description=DevUz: PostgreSQL
 
 [Container]
 ContainerName=devuz-postgres
-Image=registry.devuz.invalid/devuz/postgres:17
+Image=ghcr.io/egeg23/devuz-postgres:17
+# Образ лежит в /usr (devuz-images.service); из сети не тянем.
+Pull=never
 Network=none
 Environment=POSTGRES_HOST_AUTH_METHOD=trust
 Volume=/var/lib/devuz/postgres:/var/lib/postgresql/data

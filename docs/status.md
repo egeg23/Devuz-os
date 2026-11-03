@@ -31,7 +31,7 @@
 
 - Контейнеры: Podman (Debian 13) + quadlet. `/etc/containers/policy.json` — по умолчанию отказ, из любого реестра только образ с нашей sigstore-подписью (`matchRepository`), ключ `/usr/lib/devuz/keys/containers.pub` (в Actions — тестовый cosign 2.4 на лету, через `--extra-tree`). Тестовый реестр — `registry:2` на раннере, `10.0.2.2:5000` (адрес повешен и на `lo` раннера).
 - Сторож: все долгие службы называются `devuz-svc-*` (и контейнеры quadlet `devuz-svc-*.container`) — по префиксу имени им достаётся `devuz-svc-.service.d/10-watchdog.conf`: `Restart=on-failure` через 2 с, 3 падения за 10 мин — `failed` и один раз `devuz-alert@<служба>` (строка `DEVUZ-ALERT` и файл в `/var/lib/devuz/alerts`).
-- Службы: PostgreSQL (`devuz-svc-postgres`, без сети, сокет `/run/devuz/postgres`, данные `/var/lib/devuz/postgres`) и Caddy (`devuz-svc-caddy`, сеть хоста, `tls internal`, `https://box.local`) — quadlet в `/usr/share/containers/systemd`, образы `registry.devuz.invalid/devuz/…` (заглушка реестра), проверка здоровья → при сбое контейнер убивается и сторож поднимает. Тестовый профиль подменяет реестр (`registries.conf.d`, `prefix` → `10.0.2.2:5000`); подпись — на боевое имя (`cosign --sign-container-identity`). Тестовый реестр поднимается до первой загрузки.
+- Службы: PostgreSQL (`devuz-svc-postgres`, без сети, сокет `/run/devuz/postgres`, данные `/var/lib/devuz/postgres`) и Caddy (`devuz-svc-caddy`, сеть хоста, `tls internal`, `https://box.local`) — quadlet в `/usr/share/containers/systemd`, проверка здоровья → при сбое контейнер убивается и сторож поднимает. **Образы служб — в `/usr`** (`/usr/share/devuz/images/*.tar` + `images.list`, под verity): `devuz-images.service` грузит их в Podman, у служб `Pull=never` — интернет коробке не нужен. Имена — наш реестр `ghcr.io/egeg23/devuz-*` (оттуда — только обновления). Подпись проверяется при сборке той же политикой (`skopeo --policy`), в политике `oci-archive` разрешён только из `/usr/share/devuz/images`.
 - Канал поддержки: `devuz-svc-tailscale` (контейнер Tailscale, сеть хоста, `/dev/net/tun`), по умолчанию выключен: `ConditionPathExists=/var/lib/devuz/support-on`. Кнопка — `devuz-support on|off|status` (метка + запуск/остановка, строка в `/var/lib/devuz/support.log`). Сервер и ключ — `/etc/devuz/support.env` (заводская настройка — неделя 8). В тесте — Headscale 0.26 на раннере (`http://10.0.2.2:8085`).
 
 ## Грабли, на которые уже наступили
@@ -56,6 +56,7 @@
 
 - PR сливаем squash сразу, как только Actions зелёный, не спрашивая.
 - Сервер обновлений: пока на сервере владельца (DevUz), перед релизом — свой локальный.
+- Реестр контейнеров — `ghcr.io/egeg23` (на моё усмотрение, 03.11). Коробка работает без интернета: образы служб — в `/usr`. Изолированным компаниям нужен доступ «Ядра»/«Офиса» к их данным на чтение: файлы, папки, диски, шары в локальной сети, git-репозитории (недели 5–7).
 - Сервер: пользователь `devuz-ci`, Claude Code + `claude remote-control` в tmux (сессия `claude`), папка `~/work/devuz-os`. Выход наружу — через HTTP-прокси владельца (настроен в `~/.bashrc` и `~/.claude/settings.json` на сервере; в репозиторий не кладём). `/dev/kvm` на сервере нет → сборки только в Actions. Облачная сессия к серверу не подключается: серверные задачи — через сессию Remote Control в приложении Claude Code.
 
 ## Открытые вопросы
@@ -64,7 +65,6 @@
 
 - Ограничить `FailureAction=reboot`, чтобы не перезагружаться по кругу, если плохи обе версии (неделя 8, «Состояние»).
 - Домен или IP + порт для сервера обновлений.
-- Боевой реестр контейнеров (сейчас заглушка `registry.devuz.invalid`); и стоит ли класть образы служб прямо в `/usr` (под verity), чтобы коробка поднималась без интернета.
 - PostgreSQL: вход по сокету без пароля (`trust`) — только внутри коробки; пароли/роли приложений — вместе с «Офисом».
 - `/etc` из заготовки копируется только при первой загрузке: новые файлы `/etc` из следующих версий в уже работающую коробку не придут. Решить до первых обновлений с изменениями `/etc` (вариант — `tmpfiles.d` `C+` для нужных каталогов).
 - Ручной режим `sabotage=emergency` краснеет из-за упавшей службы, а не по признаку emergency в журнале — проверить детектор.

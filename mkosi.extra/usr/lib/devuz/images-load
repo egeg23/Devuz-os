@@ -1,0 +1,22 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Загрузить образы служб из /usr/share/devuz/images в хранилище Podman.
+# images.list: «<архив> <имя образа> <sha256 архива>». Подпись проверена при
+# сборке; здесь архивы доверенные, потому что лежат в /usr под verity
+# (политика: oci-archive только из /usr/share/devuz/images).
+# Метка /var/lib/devuz/images/<архив>.sha — эта версия уже загружена.
+set -eu
+dir=/usr/share/devuz/images
+state=/var/lib/devuz/images
+mkdir -p "$state"
+while read -r tar name sha; do
+    [ -n "$tar" ] || continue
+    if [ "$(cat "$state/$tar.sha" 2>/dev/null)" = "$sha" ] && podman image exists "$name"; then
+        echo "DEVUZ-IMAGES $name уже загружен"
+        continue
+    fi
+    id=$(podman pull -q "oci-archive:$dir/$tar")
+    podman tag "$id" "$name"
+    echo "$sha" >"$state/$tar.sha"
+    echo "DEVUZ-IMAGES $name загружен из /usr"
+done <"$dir/images.list"
