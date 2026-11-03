@@ -1,0 +1,75 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест «Ядра» (только тестовый образ, режим devuz.test=core). Модель —
+# поддельная (devuz-svc-mockllm): проверяем само «Ядро», а не модель.
+#  1. без токена — 401; с токеном — ответ, учёт записан;
+#  2. задача не из прав приложения — 403;
+#  3. повысить себе приоритет нельзя;
+#  4. очередь: живой запрос обгоняет ночной.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-CORE-TEST $*"; }
+fail=0
+api=http://127.0.0.1:8090/v1
+apps=/etc/devuz/core/apps.d
+
+for _ in $(seq 120); do curl -fsS "$api/health" >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS "$api/health" >/dev/null || { say "ERROR «Ядро» не отвечает"; journalctl -b -u devuz-svc-core.service --no-pager -n 30; say FAIL; systemctl start --no-block devuz-selftest.service; exit 1; }
+
+# Приложения: токен у приложения, на коробке — только sha256.
+mk() { # имя приоритет задачи(json)
+    local tok; tok=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '{"token_sha256":"%s","tasks":%s,"priority":"%s"}\n' "$(printf %s "$tok" | sha256sum | cut -d' ' -f1)" "$3" "$2" >"$apps/$1.json"
+    echo "$tok"
+}
+mkdir -p "$apps"
+t_staff=$(mk test-staff staff '["chat"]')
+t_night=$(mk test-night night '["chat"]')
+t_live=$(mk test-live live '["chat"]')
+podman kill --signal HUP devuz-core >/dev/null
+sleep 1
+
+ask() { # токен текст [доп. заголовок]
+    curl -s -o /tmp/core.out -w '%{http_code}' -H "authorization: Bearer $1" -H 'content-type: application/json' ${3:+-H "$3"} \
+        -d "{\"model\":\"${4:-chat}\",\"messages\":[{\"role\":\"user\",\"content\":\"$2\"}]}" "$api/chat/completions"
+}
+
+# 1. Токен.
+c=$(curl -s -o /dev/null -w '%{http_code}' -d '{}' "$api/chat/completions")
+[ "$c" = 401 ] && say "NO_TOKEN_401 ok" || { say "ERROR без токена: $c"; fail=1; }
+c=$(ask "$t_staff" "привет")
+if [ "$c" = 200 ] && grep -q 'model=mock-chat' /tmp/core.out; then
+    say "CHAT ok: задача chat → модель mock-chat"
+else
+    say "ERROR chat: $c $(cat /tmp/core.out)"; fail=1
+fi
+sleep 1
+grep -q '"app":"test-staff","task":"chat"' /var/lib/devuz/core/usage.jsonl && say "USAGE ok: $(tail -n1 /var/lib/devuz/core/usage.jsonl)" || { say "ERROR нет записи в учёте"; fail=1; }
+
+# 2. Чужая задача.
+c=$(ask "$t_staff" "код" "" code)
+[ "$c" = 403 ] && say "FORBIDDEN_403 ok: $(cat /tmp/core.out)" || { say "ERROR задача без права: $c"; fail=1; }
+
+# 3. Повысить приоритет нельзя.
+p=$(curl -s -D - -o /dev/null -H "authorization: Bearer $t_night" -H 'x-devuz-priority: live' -H 'content-type: application/json' \
+    -d '{"model":"chat","messages":[{"role":"user","content":"x"}]}' "$api/chat/completions" | tr -d '\r' | sed -n 's/^x-devuz-priority: //Ip')
+[ "$p" = night ] && say "NO_PRIORITY_RAISE ok" || { say "ERROR приоритет поднялся до «$p»"; fail=1; }
+
+# 4. Очередь: модель занята ночным; затем встают ночной B и живой C.
+ask "$t_night" "sleep:4 A" >/dev/null & a=$!
+sleep 1
+( ask "$t_night" "B" >/dev/null; cp /tmp/core.out /tmp/core.B ) & b=$!
+sleep 0.5
+( curl -s -o /tmp/core.C -H "authorization: Bearer $t_live" -H 'content-type: application/json' \
+    -d '{"model":"chat","messages":[{"role":"user","content":"C"}]}' "$api/chat/completions" ) & c=$!
+wait $a $b $c
+oB=$(grep -o 'order=[0-9]*' /tmp/core.B | cut -d= -f2); oC=$(grep -o 'order=[0-9]*' /tmp/core.C | cut -d= -f2)
+if [ -n "$oB" ] && [ -n "$oC" ] && [ "$oC" -lt "$oB" ]; then
+    say "QUEUE ok: живой обработан $oC-м, ночной $oB-м"
+else
+    say "ERROR очередь: живой ${oC:-?}, ночной ${oB:-?}"; fail=1
+fi
+
+rm -f "$apps"/test-*.json
+if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
+systemctl start --no-block devuz-selftest.service

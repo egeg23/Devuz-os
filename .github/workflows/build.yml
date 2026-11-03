@@ -129,7 +129,8 @@ jobs:
           : >"$tree/images.list"
           for pair in "mirror.gcr.io/library/postgres:17 devuz-postgres:17" \
                       "mirror.gcr.io/library/caddy:2 devuz-caddy:2" \
-                      "ghcr.io/tailscale/tailscale:v1.84.3 devuz-tailscale:v1.84.3"; do
+                      "ghcr.io/tailscale/tailscale:v1.84.3 devuz-tailscale:v1.84.3" \
+                      "mirror.gcr.io/library/node:22-bookworm-slim devuz-node:22"; do
             set -- $pair; src=$1; img=$2; repo=${img%%:*}
             skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
             d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
@@ -429,6 +430,20 @@ jobs:
             { echo "::error::коробка не вошла в Headscale"; rc=1; }
           exit $rc
 
+      - name: Тест «Ядра» (токены, права, учёт, очередь)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=core EXPECT_VERSION="$DEVUZ_VERSION" LOG=core.log TEST_TITLE="Тест «Ядра»"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in NO_TOKEN_401 CHAT USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE; do
+            line=$(grep -m1 -o "DEVUZ-CORE-TEST $k .*" core.log || true)
+            echo "- ${line:-❌ нет DEVUZ-CORE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
+          exit $rc
+
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
         if: env.SABOTAGE == 'none'
         run: |
@@ -537,6 +552,7 @@ jobs:
             watchdog.log
             services.log
             support.log
+            core.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
