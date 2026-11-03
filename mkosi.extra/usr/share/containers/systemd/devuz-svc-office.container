@@ -7,12 +7,13 @@
 # Договор с образом: слушает 127.0.0.1:8100 (наружу — только через Caddy),
 # проверка здоровья — `node /app/health.js`, «Ядро» — сокет
 # /run/devuz/core/core.sock и токен из /etc/devuz/office/core-token,
-# данные — /var/lib/devuz/office; по SIGTERM завершается сам (Node — PID 1,
+# база — PostgreSQL коробки по сокету /run/devuz/postgres, роль и база office,
+# пароль из /etc/devuz/office/db-password; данные — /var/lib/devuz/office; по SIGTERM завершается сам (Node — PID 1,
 # без обработчика его убьют через 10 с, и служба будет считаться упавшей).
 [Unit]
 Description=DevUz: «Офис»
-Wants=devuz-svc-core.service
-After=devuz-svc-core.service network-online.target
+Wants=devuz-svc-core.service devuz-svc-postgres.service
+After=devuz-svc-core.service devuz-svc-postgres.service network-online.target
 ConditionPathExists=/etc/devuz/office/enabled
 
 [Container]
@@ -23,8 +24,9 @@ Pull=missing
 Network=host
 Volume=/run/devuz/core:/run/devuz/core:ro
 Volume=/etc/devuz/office:/etc/devuz/office:ro
+Volume=/run/devuz/postgres:/run/devuz/postgres:ro
 Volume=/var/lib/devuz/office:/var/lib/devuz/office
-Environment=OFFICE_PORT=8100 CORE_SOCKET=/run/devuz/core/core.sock CORE_TOKEN_FILE=/etc/devuz/office/core-token OFFICE_DATA=/var/lib/devuz/office
+Environment=OFFICE_PORT=8100 CORE_SOCKET=/run/devuz/core/core.sock CORE_TOKEN_FILE=/etc/devuz/office/core-token OFFICE_DATA=/var/lib/devuz/office PGHOST=/run/devuz/postgres PGUSER=office PGDATABASE=office OFFICE_DB_PASSWORD_FILE=/etc/devuz/office/db-password
 HealthCmd=node /app/health.js
 HealthInterval=10s
 HealthStartPeriod=60s

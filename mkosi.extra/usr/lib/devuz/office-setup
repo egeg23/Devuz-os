@@ -20,3 +20,33 @@ if [ "$(cat "$app" 2>/dev/null)" != "$want" ]; then
     ( umask 022; printf '%s\n' "$want" >"$app.new" ) && mv "$app.new" "$app"
     systemctl reload devuz-svc-core.service 2>/dev/null || true
 fi
+
+# База «Офиса»: роль и база office в PostgreSQL коробки, вход по сокету с
+# паролем (scram-sha-256) только для этой роли и этой базы; всем остальным —
+# по-прежнему только peer. Пароль — один раз, 0600, /etc/devuz/office/db-password.
+pgdata=/var/lib/devuz/postgres
+pg() { podman exec -u postgres devuz-postgres psql -U postgres -v ON_ERROR_STOP=1 -tAq "$@"; }
+for i in $(seq 60); do podman exec devuz-postgres pg_isready -q -h /var/run/postgresql 2>/dev/null && break; sleep 2; done
+podman exec devuz-postgres pg_isready -q -h /var/run/postgresql || { echo "DEVUZ-ALERT «Офис»: PostgreSQL не отвечает — базу не подготовить"; exit 1; }
+if [ ! -s "$etc/db-password" ]; then
+    ( umask 077; head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$etc/db-password.new" )
+    mv "$etc/db-password.new" "$etc/db-password"
+fi
+pw=$(cat "$etc/db-password")
+[[ "$pw" =~ ^[0-9a-f]+$ ]] || { echo "DEVUZ-ALERT «Офис»: испорчен $etc/db-password"; exit 1; }
+if [ "$(pg -c "select 1 from pg_roles where rolname='office'")" = 1 ]; then
+    pg -c "alter role office with login password '$pw'" >/dev/null
+else
+    pg -c "create role office login password '$pw'" >/dev/null
+    echo "DEVUZ-OFFICE роль базы office создана"
+fi
+[ "$(pg -c "select 1 from pg_database where datname='office'")" = 1 ] || { pg -c "create database office owner office" >/dev/null; echo "DEVUZ-OFFICE база office создана"; }
+rule='local   office          office                                  scram-sha-256'
+if ! grep -qE '^local[[:space:]]+office[[:space:]]+office[[:space:]]+scram-sha-256' "$pgdata/pg_hba.conf"; then
+    # Правило — первым: pg_hba читается сверху вниз.
+    { echo "$rule"; cat "$pgdata/pg_hba.conf"; } >"$pgdata/pg_hba.conf.new"
+    chown --reference="$pgdata/pg_hba.conf" "$pgdata/pg_hba.conf.new"
+    chmod --reference="$pgdata/pg_hba.conf" "$pgdata/pg_hba.conf.new"
+    mv "$pgdata/pg_hba.conf.new" "$pgdata/pg_hba.conf"
+    pg -c 'select pg_reload_conf()' >/dev/null
+fi
