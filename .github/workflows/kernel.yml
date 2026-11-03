@@ -3,7 +3,7 @@
 # коммита не менялась, когда trixie-backports уходят вперёд.
 # Это единственный workflow с правом записи (только contents, только для
 # Release). Он не собирает образ и не запускает чужой код — только скачивает
-# пакеты Debian со сверкой SHA256. На PR он не запускается.
+# пакеты Debian со сверкой подписи индекса и SHA256. На PR он не запускается.
 name: kernel
 
 on:
@@ -24,13 +24,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Ключи архива Debian (закреплённые, для проверки InRelease)
+        run: |
+          deb=debian-archive-keyring_2025.1_all.deb
+          sha=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
+          curl -fsSLO "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$deb"
+          echo "$sha  $deb" | sha256sum --strict -c -
+          sudo dpkg -i "$deb"
+          command -v gpgv >/dev/null || sudo apt-get install -y --no-install-recommends gpgv
 
       - name: Выложить ядро в Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          . ./kernel.lock
+          # kernel.lock — данные: читаем, а не выполняем.
+          KERNEL_VERSION=$(sed -n 's/^KERNEL_VERSION=//p' kernel.lock)
+          [[ "$KERNEL_VERSION" =~ ^[0-9][0-9A-Za-z.~+-]*$ ]] || { echo "::error::плохая KERNEL_VERSION"; exit 1; }
           tag="kernel-${KERNEL_VERSION//\~/_}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag уже есть — ничего не делаем."
@@ -39,11 +50,15 @@ jobs:
           python3 tools/fetch-kernel-debs.py "$KERNEL_VERSION" debs
           gh release create "$tag" debs/*.deb \
             --title "Ядро $KERNEL_VERSION" \
-            --notes "Пакеты ядра linux-image-amd64 $KERNEL_VERSION из trixie-backports (deb.debian.org, SHA256 сверены с индексом). Их берёт сборка образа, когда kernel.lock указывает на эту версию."
+            --notes "Пакеты ядра linux-image-amd64 $KERNEL_VERSION из trixie-backports (deb.debian.org: подпись InRelease проверена gpgv, SHA256 сверены с индексом). Их берёт сборка образа, когда kernel.lock указывает на эту версию."
           {
             echo "## Ядро выложено"
             echo "Release \`$tag\`:"
             echo '```'
             ls -la debs/
+            echo '```'
+            echo "Строки для kernel.lock (отдельным PR — без них сборка ядро из Release не берёт):"
+            echo '```'
+            for f in debs/*.deb; do n=$(basename "$f"); echo "KERNEL_SHA256=$(sha256sum <"$f" | cut -d' ' -f1) ${n//\~/.}"; done
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
