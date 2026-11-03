@@ -18,7 +18,7 @@ Volume=/etc/devuz/core:/etc/devuz/core:ro
 Volume=/var/lib/devuz/core:/var/lib/devuz/core
 Volume=/run/devuz/core:/run/devuz/core
 Exec=node /app/server.js
-HealthCmd=node -e "fetch('http://127.0.0.1:8090/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+HealthCmd=node /app/health.js
 HealthInterval=10s
 HealthStartPeriod=20s
 HealthOnFailure=kill
