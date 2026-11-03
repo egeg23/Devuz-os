@@ -1,0 +1,6 @@
+# Только тестовый образ: долгая служба для теста сторожа (её убивают).
+[Unit]
+Description=DevUz: тестовая служба (сторож)
+
+[Service]
+ExecStart=/bin/sleep infinity

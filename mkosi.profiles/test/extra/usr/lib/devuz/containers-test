@@ -1,0 +1,68 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест контейнеров (только тестовый образ, режим devuz.test=containers).
+# Тестовый реестр на раннере: 10.0.2.2:5000/devuz/hello — тег signed
+# подписан тестовым ключом cosign, тег unsigned — нет.
+#  1. служба quadlet с подписанным образом стартует;
+#  2. неподписанный образ не скачивается: отказ политики подписи;
+#  3. служба quadlet с неподписанным образом не стартует.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-CONTAINERS $*"; }
+fail=0
+reg=10.0.2.2:5000/devuz/hello
+q=/etc/containers/systemd
+
+say "PODMAN $(podman --version 2>&1)"
+mkdir -p "$q"
+for tag in signed unsigned; do
+    cat >"$q/devuz-hello-$tag.container" <<UNIT
+[Unit]
+Description=DevUz: тестовый контейнер ($tag)
+
+[Container]
+Image=$reg:$tag
+Exec=sleep 100000
+Network=none
+
+[Service]
+TimeoutStartSec=300
+UNIT
+done
+systemctl daemon-reload
+
+# 1. Подписанный.
+if systemctl start devuz-hello-signed.service && systemctl is-active --quiet devuz-hello-signed.service; then
+    say "SIGNED_RUNNING ok"
+else
+    say "ERROR подписанный контейнер не запустился:"
+    journalctl -b -u devuz-hello-signed.service --no-pager -n 30
+    fail=1
+fi
+
+# 2. Неподписанный — отказ именно политики подписи.
+if podman pull "$reg:unsigned" >/tmp/pull.out 2>&1; then
+    say "ERROR неподписанный образ скачался"
+    fail=1
+elif grep -qiE 'Source image rejected|signature' /tmp/pull.out; then
+    say "UNSIGNED_REJECTED $(grep -m1 -oiE 'Source image rejected.*' /tmp/pull.out)"
+else
+    say "ERROR отказ, но не по подписи:"
+    sed 's/^/  /' /tmp/pull.out
+    fail=1
+fi
+
+# 3. Служба с неподписанным образом не стартует.
+if systemctl start devuz-hello-unsigned.service; then
+    say "ERROR служба с неподписанным образом запустилась"
+    fail=1
+else
+    say "UNSIGNED_SERVICE_FAILED ok"
+fi
+# Убрать за собой, чтобы самопроверка не считала это упавшей службой.
+rm -f "$q/devuz-hello-unsigned.container"
+systemctl reset-failed devuz-hello-unsigned.service 2>/dev/null || true
+systemctl daemon-reload
+
+if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
+systemctl start --no-block devuz-selftest.service

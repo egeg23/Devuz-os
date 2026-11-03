@@ -1,0 +1,12 @@
+{
+  "_": "Только тестовый образ: задачи ведут на поддельную модель (devuz-svc-mockllm); chat-real — на настоящую маленькую (тест моделей).",
+  "backends": {
+    "mock": { "url": "http://127.0.0.1:8091/v1", "concurrency": 1, "max_queue": 2, "timeout_s": 5 },
+    "llm":  { "url": "http://127.0.0.1:8081/v1", "concurrency": 1, "max_queue": 4, "timeout_s": 300 }
+  },
+  "tasks": {
+    "chat": { "backend": "mock", "model": "mock-chat" },
+    "code": { "backend": "mock", "model": "mock-code" },
+    "chat-real": { "backend": "llm", "model": "smollm2-135m" }
+  }
+}

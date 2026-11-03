@@ -1,0 +1,5 @@
+# Из trixie-backports берём только ядро. Остальное в backports имеет
+# приоритет 100 (NotAutomatic), поэтому само не ставится.
+Package: linux-image-* linux-base*
+Pin: release n=trixie-backports
+Pin-Priority: 900

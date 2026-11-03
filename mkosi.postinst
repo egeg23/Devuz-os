@@ -1,0 +1,34 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Своё имя системы. IMAGE_ID и IMAGE_VERSION mkosi допишет сам после
+# этого скрипта (из ImageId= и ImageVersion=).
+set -euo pipefail
+
+build_id="${DEVUZ_BUILD_ID:-local}"
+
+cat >"$BUILDROOT/usr/lib/os-release" <<OSR
+NAME="DevUz OS"
+ID=devuz
+ID_LIKE=debian
+PRETTY_NAME="DevUz OS"
+HOME_URL="https://github.com/egeg23/devuz-os"
+BUILD_ID=${build_id}
+DEFAULT_HOSTNAME=devuz
+OSR
+
+# /etc/os-release в Debian — ссылка на /usr/lib/os-release; на всякий
+# случай проверим, что это так и осталось.
+ln -sf ../usr/lib/os-release "$BUILDROOT/etc/os-release"
+
+# Только для теста отката в Actions: «битая» версия, у которой готовность
+# всегда падает. Обычная сборка эту ветку не трогает.
+if [ "${DEVUZ_TEST_BROKEN:-}" = 1 ]; then
+    echo "ВНИМАНИЕ: собираем «битую» версию для теста отката"
+    mkdir -p "$BUILDROOT/usr/lib/systemd/system/devuz-ready.service.d"
+    cat >"$BUILDROOT/usr/lib/systemd/system/devuz-ready.service.d/90-test-broken.conf" <<'CONF'
+[Service]
+ExecStartPre=/bin/echo DEVUZ-READY-BROKEN
+ExecStart=
+ExecStart=/bin/false
+CONF
+fi

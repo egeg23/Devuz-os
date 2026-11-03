@@ -1,0 +1,30 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Что делать в тесте — из учётных данных devuz.test (через запятую):
+#   selftest                         — самопроверка;
+#   update,<адрес сервера>,<версия>  — тест обновления A/B (см. update-test);
+#   luks                             — ключи диска: TPM, чужой PCR 7, ключ восстановления;
+#   containers                       — подписанный контейнер стартует, неподписанный нет;
+#   watchdog                         — сторож: убитая и зависшая служба поднимаются, вечно падающая — сигнал;
+#   services                         — PostgreSQL и Caddy работают и переживают перезагрузку;
+#   support,<адрес Headscale>,<ключ> — кнопка канала поддержки: вкл / выкл;
+#   core                             — «Ядро»: токены, права, учёт, очередь;
+#   models                           — модели: подпись манифеста, настоящая модель через «Ядро»;
+#   emergency                        — ручная проверка теста: уйти в аварийный режим.
+set -u
+cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
+IFS=, read -r mode arg1 arg2 <<<"$cred"
+echo "DEVUZ-TEST режим «${mode:-?}»"
+case "$mode" in
+    selftest) systemctl start --no-block devuz-selftest.service ;;
+    update)   exec /usr/lib/devuz/update-test "$arg1" "$arg2" ;;
+    luks)     exec /usr/lib/devuz/luks-test ;;
+    containers) exec /usr/lib/devuz/containers-test ;;
+    watchdog) exec /usr/lib/devuz/watchdog-test ;;
+    services) exec /usr/lib/devuz/services-test ;;
+    support)  exec /usr/lib/devuz/support-test "$arg1" "$arg2" ;;
+    core)     exec /usr/lib/devuz/core-test ;;
+    models)   exec /usr/lib/devuz/models-test ;;
+    emergency) systemctl --no-block isolate emergency.target ;;
+    *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
+esac

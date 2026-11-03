@@ -1,0 +1,6 @@
+#!/bin/sh
+# Версия образа: ГГГГ.ММ.ДД.<номер прогона>. В Actions номер — GITHUB_RUN_NUMBER,
+# у себя — 0. Сравнивается как версия (systemd-analyze compare-versions),
+# поэтому 2026.11.02.10 новее 2026.11.02.9.
+set -eu
+echo "$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER:-0}"

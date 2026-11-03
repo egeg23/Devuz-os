@@ -1,0 +1,11 @@
+Package: devuz-no-initramfs
+Version: 1.0
+Architecture: all
+Maintainer: DevUz <noreply@devuz.invalid>
+Provides: linux-initramfs-tool
+Section: kernel
+Priority: optional
+Description: DevUz: initrd собирает mkosi, генератор initrd в образе не нужен
+ Пакет ядра Debian требует «dracut | initramfs-tools | linux-initramfs-tool».
+ Этот пустой пакет закрывает зависимость, чтобы в образ не попадал dracut:
+ initrd для UKI собирает mkosi при сборке образа.

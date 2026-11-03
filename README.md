@@ -32,8 +32,13 @@
 ```sh
 git clone https://github.com/egeg23/devuz-os
 cd devuz-os
+tools/prepare-packages.sh   # ядро из Release по kernel.lock + пакет без dracut
+mkosi genkey                # свой ключ подписи verity (mkosi.key/mkosi.crt, в git не попадёт)
 mkosi -f build
 ```
+
+Без `gh` (GitHub CLI) скрипт возьмёт ядро из `trixie-backports` — какое там
+есть сейчас; точная версия образа из Actions записана в `kernel.lock`.
 
 Результат — в `mkosi.output/`: образ диска `devuz_<версия>.raw`, отдельно
 UKI (`.efi`), разделы и манифест пакетов. Первая сборка долгая: mkosi
@@ -50,15 +55,26 @@ mkosi vm
 Готовый образ из Actions (артефакт `devuz-image-…`) можно запустить и без
 mkosi — нужны `qemu-system-x86_64` и прошивка UEFI (пакет `ovmf`):
 
+Root создаётся при первой загрузке на свободном месте и шифруется ключом
+из TPM, поэтому нужны место на диске и виртуальный TPM (пакет `swtpm`):
+
 ```sh
 unzstd devuz_*.raw.zst
+truncate -s 16G devuz_<версия>.raw          # место под root
 cp /usr/share/OVMF/OVMF_VARS_4M.fd ./vars.fd
+mkdir -p tpm
+swtpm socket --tpm2 --tpmstate dir=./tpm --ctrl type=unixio,path=./tpm/sock &
 qemu-system-x86_64 -machine q35 -accel kvm -cpu host -m 2G -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=./vars.fd \
+  -chardev socket,id=chrtpm,path=./tpm/sock \
+  -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
   -drive if=virtio,format=raw,file=devuz_<версия>.raw \
   -nic user,model=virtio-net-pci
 ```
+
+Каталог `tpm/` храните вместе с образом: в нём ключ диска. Без него
+(или с другим) root не откроется.
 
 Появится экран входа с надписью «DevUz OS» и версией образа. Пользователей
 для входа пока нет — это следующие недели.
@@ -67,18 +83,30 @@ VirtualBox — «если получится»: перевести образ
 `VBoxManage convertfromraw devuz_<версия>.raw devuz.vdi` и включить EFI
 в настройках машины.
 
-## Самопроверка
+## Тестовый образ и самопроверка
 
-В образ встроена служба `devuz-selftest.service`. Она запускается только
-если в строку ядра добавить `systemd.wants=devuz-selftest.service`:
-печатает версии ядра и systemd, `os-release`, список включённых служб,
-пишет `DEVUZ-SELFTEST OK` и выключает машину. Так образ проверяется в
-Actions:
+Боевой образ не содержит тестовых служб и не принимает учётные данные
+systemd (`systemd.import_credentials=no`). Для проверки собирается
+тестовый образ — профиль `test` (`mkosi.profiles/test/`): в нём служба
+`devuz-test.service`, которая по учётным данным `devuz.test` запускает
+самопроверку или тест обновления. Самопроверка печатает версии, состояние
+`/usr`, root, Secure Boot и TPM, пишет `DEVUZ-SELFTEST OK` и выключает
+машину. Так образ проверяется в Actions:
 
 ```sh
-mkosi --kernel-command-line-extra=systemd.wants=devuz-selftest.service \
-  --console=read-only vm
+mkosi --profile=test -f build
+mkosi --profile=test --console=native --credential=devuz.test=selftest vm
 ```
+
+Тестовый образ коробкам не ставить.
+
+## Размер диска
+
+Root создаётся при первой загрузке на свободном месте того диска, где
+лежит `/usr`. Сам образ занимает около 5,2 ГБ (ESP 1 ГБ и два слота `/usr`
+по 2 ГБ), root — не меньше 1 ГБ: диск коробки нужен от 8 ГБ. Если места
+нет, root не создастся и система не загрузится. Для запуска в QEMU
+вручную увеличьте файл образа: `truncate -s 16G devuz_<версия>.raw`.
 
 ## Лицензия
 
