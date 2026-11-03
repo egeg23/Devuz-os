@@ -1,0 +1,22 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Перед запуском «Офиса»: каталоги и токен приложения «office» в «Ядре».
+# Токен создаётся один раз (0600, /etc/devuz/office/core-token); в «Ядре» —
+# только его отпечаток (sha256) с задачами и приоритетом live: «Офис» —
+# живые люди за экраном, их запросы впереди ночных.
+set -eu
+etc=/etc/devuz/office
+app=/etc/devuz/core/apps.d/office.json
+mkdir -p "$etc" /var/lib/devuz/office /etc/devuz/core/apps.d
+chmod 700 "$etc" /var/lib/devuz/office
+if [ ! -s "$etc/core-token" ]; then
+    ( umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$etc/core-token.new" )
+    mv "$etc/core-token.new" "$etc/core-token"
+    echo "DEVUZ-OFFICE токен «Ядра» для «Офиса» создан"
+fi
+h=$(sha256sum <"$etc/core-token" | cut -d' ' -f1)
+want=$(printf '{"token_sha256":"%s","tasks":["chat","chat-uz","code","embed"],"priority":"live"}\n' "$h")
+if [ "$(cat "$app" 2>/dev/null)" != "$want" ]; then
+    ( umask 022; printf '%s\n' "$want" >"$app.new" ) && mv "$app.new" "$app"
+    systemctl reload devuz-svc-core.service 2>/dev/null || true
+fi

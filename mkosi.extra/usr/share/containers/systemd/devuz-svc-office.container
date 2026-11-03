@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# «Офис» — рабочее окно сотрудников (код — в закрытом репозитории «Офиса»;
+# здесь только место под него, договор — docs/plans/week-06.md).
+# Включается заводской настройкой: файл /etc/devuz/office/enabled. Образ —
+# из нашего реестра, только с нашей подписью (политика контейнеров), в
+# открытую сборку ОС не входит.
+# Договор с образом: слушает 127.0.0.1:8100 (наружу — только через Caddy),
+# проверка здоровья — `node /app/health.js`, «Ядро» — сокет
+# /run/devuz/core/core.sock и токен из /etc/devuz/office/core-token,
+# данные — /var/lib/devuz/office; по SIGTERM завершается сам (Node — PID 1,
+# без обработчика его убьют через 10 с, и служба будет считаться упавшей).
+[Unit]
+Description=DevUz: «Офис»
+Wants=devuz-svc-core.service
+After=devuz-svc-core.service network-online.target
+ConditionPathExists=/etc/devuz/office/enabled
+
+[Container]
+ContainerName=devuz-office
+Image=ghcr.io/egeg23/devuz-office:v1
+# Образ — из реестра (с проверкой подписи), если его ещё нет на коробке.
+Pull=missing
+Network=host
+Volume=/run/devuz/core:/run/devuz/core:ro
+Volume=/etc/devuz/office:/etc/devuz/office:ro
+Volume=/var/lib/devuz/office:/var/lib/devuz/office
+Environment=OFFICE_PORT=8100 CORE_SOCKET=/run/devuz/core/core.sock CORE_TOKEN_FILE=/etc/devuz/office/core-token OFFICE_DATA=/var/lib/devuz/office
+HealthCmd=node /app/health.js
+HealthInterval=10s
+HealthStartPeriod=60s
+HealthOnFailure=kill
+Notify=healthy
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+PodmanArgs=--oom-score-adj=-500
+
+[Service]
+ExecStartPre=/usr/lib/devuz/office-setup
+Slice=devuz-ui.slice
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

@@ -496,6 +496,30 @@ jobs:
           grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
           exit $rc
 
+      - name: Тест места под «Офис» (подписанный образ, Caddy, токен «Ядра»)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Заглушка «Офиса» (настоящий — в закрытом репозитории): собираем,
+          # кладём в тестовый реестр и подписываем тестовым ключом под именем
+          # настоящего образа — коробка берёт её с проверкой подписи.
+          # docker пускает http-реестр только по localhost — кладём туда, это тот же реестр.
+          reg=10.0.2.2:5000/devuz-office
+          docker build -q -t localhost:5000/devuz-office:v1 -f tests/office-stub/Containerfile tests/office-stub
+          docker push -q localhost:5000/devuz-office:v1
+          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:v1")
+          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+            --allow-insecure-registry --sign-container-identity ghcr.io/egeg23/devuz-office "$reg@$d"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=office EXPECT_VERSION="$DEVUZ_VERSION" LOG=office.log TEST_TITLE="Тест «Офиса»"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN FALLBACK; do
+            line=$(grep -m1 -o "DEVUZ-OFFICE-TEST $k .*" office.log || true)
+            echo "- ${line:-❌ нет DEVUZ-OFFICE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-OFFICE-TEST OK' office.log || { echo "::error::тест «Офиса» не прошёл"; rc=1; }
+          exit $rc
+
       - name: Тест моделей (подпись манифеста, настоящая модель через «Ядро»)
         if: env.SABOTAGE == 'none'
         run: |
