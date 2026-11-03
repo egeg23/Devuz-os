@@ -1,10 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Служба $1 не поднялась после трёх попыток: записать сигнал (один на
-# каждый такой случай) и вывести строку DEVUZ-ALERT.
+# каждый такой случай), вывести строку DEVUZ-ALERT и назначить повтор.
 set -eu
 unit=${1:?служба}
 dir=/var/lib/devuz/alerts
 mkdir -p "$dir"
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $unit не поднимается после 3 попыток" >>"$dir/$unit"
 echo "DEVUZ-ALERT $unit не поднимается после 3 попыток"
+# Человека в офисе нет: через 15 минут попробовать ещё раз (окно счёта
+# попыток к тому времени прошло). Сигнал — снова один, если опять не вышло.
+systemd-run --quiet --collect --unit="devuz-retry-${unit%.service}" --on-active=15min \
+    /usr/bin/systemctl --no-block start "$unit" 2>/dev/null || true

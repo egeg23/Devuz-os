@@ -28,10 +28,12 @@ Notify=healthy
 ReadOnly=true
 DropCapability=all
 NoNewPrivileges=true
+PodmanArgs=--oom-score-adj=-900
 
 [Service]
 ExecStartPre=/usr/bin/mkdir -p /etc/devuz/core/apps.d /var/lib/devuz/core /run/devuz/core
 TimeoutStartSec=120
+Slice=devuz-ui.slice
 # systemctl reload devuz-svc-core — перечитать таблицу задач и приложения.
 ExecReload=/usr/bin/podman kill --signal HUP devuz-core
 

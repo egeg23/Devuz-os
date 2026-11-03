@@ -11,7 +11,7 @@ say() { echo "DEVUZ-SERVICES $*"; }
 fail=0
 mark=/var/lib/devuz/test-services-boot
 wait_active() { for _ in $(seq 300); do systemctl is-active --quiet "$1" && return 0; sleep 1; done; return 1; }
-psql() { podman exec devuz-postgres psql -U postgres -tAc "$1"; }
+psql() { podman exec -u postgres devuz-postgres psql -U postgres -tAc "$1"; }
 
 for u in devuz-svc-postgres.service devuz-svc-caddy.service; do
     if wait_active "$u"; then
@@ -53,6 +53,21 @@ else
     else
         say "ERROR подмена образа пережила перезагрузку: ${have:0:12}, ждали ${want:0:12}"; fail=1
     fi
+fi
+
+# Аудит В: вход в базу только peer; API Caddy закрыт; имя; время; журнал на диске.
+if podman exec devuz-postgres psql -U postgres -tAc 'select 1' >/dev/null 2>&1; then
+    say "ERROR в базу пускает без пароля не своего пользователя (root)"; fail=1
+else
+    say "DB_PEER_ONLY ok: root в контейнере не входит как postgres"
+fi
+if curl -s -m 3 -o /dev/null http://127.0.0.1:2019/config/; then say "ERROR API Caddy :2019 открыт"; fail=1; else say "CADDY_ADMIN_CLOSED ok"; fi
+h=$(hostname); [ "$h" = devuz ] && say "HOSTNAME ok: $h" || { say "ERROR имя коробки: $h"; fail=1; }
+systemctl is-enabled --quiet systemd-timesyncd.service && say "TIMESYNC_ENABLED ok ($(timedatectl show -p Timezone --value))" || { say "ERROR timesyncd не включён"; fail=1; }
+s=$(systemctl show -p Slice --value devuz-svc-postgres.service); [ "$s" = devuz-ui.slice ] && say "UI_SLICE ok" || { say "ERROR PostgreSQL в ломте «$s»"; fail=1; }
+if [ -e "$mark" ]; then
+    n=$(journalctl --list-boots --no-pager 2>/dev/null | grep -c . || true)
+    [ "$n" -ge 2 ] && say "JOURNAL_PERSISTENT ok: загрузок в журнале $n" || { say "ERROR журнал не пережил перезагрузку ($n)"; fail=1; }
 fi
 
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi

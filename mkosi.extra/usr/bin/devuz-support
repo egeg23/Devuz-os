@@ -62,6 +62,7 @@ case "${1:-status}" in
         prepare
         mkdir -p /var/lib/devuz && touch "$mark"
         note "доступ поддержки: включаю"
+        systemctl reset-failed "$unit" 2>/dev/null || true
         if ! systemctl start "$unit"; then
             rm -f "$mark"
             note "доступ поддержки: НЕ включился, метка снята"

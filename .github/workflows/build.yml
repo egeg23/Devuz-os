@@ -382,7 +382,7 @@ jobs:
           export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
           export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED; do
+          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED DB_PEER_ONLY CADDY_ADMIN_CLOSED HOSTNAME TIMESYNC_ENABLED UI_SLICE JOURNAL_PERSISTENT; do
             line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
             echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
