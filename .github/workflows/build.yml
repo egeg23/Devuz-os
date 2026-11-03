@@ -93,6 +93,21 @@ jobs:
           echo "GNUPGHOME=$GNUPGHOME" >>"$GITHUB_ENV"
           echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/keys-tree" >>"$GITHUB_ENV"
 
+      - name: Тестовый ключ подписи контейнеров cosign (на лету, никуда не сохраняется)
+        run: |
+          # cosign 2.4: подписи тегами .sig — их читает Podman 5.4 из Debian 13.
+          v=v2.4.1
+          base=https://github.com/sigstore/cosign/releases/download/$v
+          curl -fsSLo /tmp/cosign-linux-amd64 "$base/cosign-linux-amd64"
+          curl -fsSLo /tmp/cosign_checksums.txt "$base/cosign_checksums.txt"
+          (cd /tmp && grep ' cosign-linux-amd64$' cosign_checksums.txt | sha256sum -c -)
+          sudo install -m 755 /tmp/cosign-linux-amd64 /usr/local/bin/cosign
+          mkdir -p "$WORK/cosign"
+          (cd "$WORK/cosign" && COSIGN_PASSWORD= cosign generate-key-pair)
+          # Открытый ключ — в образ (политика /etc/containers/policy.json его ждёт).
+          mkdir -p "$WORK/keys-tree/usr/lib/devuz/keys"
+          cp "$WORK/cosign/cosign.pub" "$WORK/keys-tree/usr/lib/devuz/keys/containers.pub"
+
       - name: Пакеты для сборки (ядро из Release, без dracut)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,6 +254,37 @@ jobs:
           grep -q 'DEVUZ-LUKS OK' luks.log || { echo "::error::тест ключей диска не прошёл"; rc=1; }
           exit $rc
 
+      - name: Тест контейнеров (подписанный стартует, неподписанный — нет)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
+          # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
+          sudo ip addr add 10.0.2.2/32 dev lo
+          # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
+          # загрузить свой профиль по умолчанию — запускаем реестр без него.
+          docker run -d --name devuz-registry --security-opt apparmor=unconfined \
+            -p 5000:5000 mirror.gcr.io/library/registry:2
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
+          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
+          reg=10.0.2.2:5000/devuz/hello
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.37 "docker://$reg:signed"
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 "docker://$reg:unsigned"
+          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
+          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+            --allow-insecure-registry "$reg@$d"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=containers EXPECT_VERSION="$DEVUZ_VERSION" LOG=containers.log
+          # Служба с неподписанным образом падает нарочно — это часть теста.
+          export ALLOW_FAILED_START=1 TEST_TITLE="Тест контейнеров"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in SIGNED_RUNNING UNSIGNED_REJECTED UNSIGNED_SERVICE_FAILED; do
+            line=$(grep -m1 -o "DEVUZ-CONTAINERS $k.*" containers.log || true)
+            echo "- ${line:-❌ нет DEVUZ-CONTAINERS $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-CONTAINERS OK' containers.log || { echo "::error::тест контейнеров не прошёл"; rc=1; }
+          exit $rc
+
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
         if: env.SABOTAGE == 'none'
         run: |
@@ -343,6 +389,7 @@ jobs:
             boot.log
             update.log
             luks.log
+            containers.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
