@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: класс коробки (Лайт / Про / Джарвис)
+DefaultDependencies=no
+After=local-fs.target devuz-factory-etc.service
+Before=devuz-svc-core.service devuz-svc-llm.service sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/box-class
+StandardOutput=journal+console
+
+[Install]
+WantedBy=sysinit.target

@@ -17,6 +17,9 @@
 // с Retry-After, а не ждёт бесконечно — коробка не «тормозит у всех».
 // Учёт: /var/lib/devuz/core/usage-ГГГГ-ММ-ДД.jsonl — кто, задача, токены,
 // время. Текст запросов и ответов не пишется никуда.
+// Таблица задач: /etc/devuz/core/tasks.json, иначе tasks.<класс коробки>.json
+// (/run/devuz/box/box.json, devuz-box-class), иначе tasks.json. Задачи нет
+// на этой модели коробки — 404 с подсказкой, на какой она есть.
 // Облако выключено: задачи ведут только на адреса из таблицы коробки.
 "use strict";
 const http = require("node:http");
@@ -26,7 +29,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const TASKS_ETC = "/etc/devuz/core/tasks.json";
-const TASKS_USR = "/usr/share/devuz/core/tasks.json";
+const TASKS_USR_DIR = "/usr/share/devuz/core";
+const BOX_JSON = "/run/devuz/box/box.json";
 const APPS_DIR = "/etc/devuz/core/apps.d";
 const USAGE_DIR = "/var/lib/devuz/core";
 const SOCK = "/run/devuz/core/core.sock";
@@ -55,19 +59,35 @@ function checkTasks(t) {
     if (!r || !backends.has(r.backend) || typeof r.model !== "string") throw new Error(`задача «${name}»: нет такого бэкенда или model`);
     tasks.set(name, { backend: r.backend, model: r.model });
   }
-  return { backends, tasks };
+  const unavailable = new Map();
+  for (const [name, why] of Object.entries(t.unavailable || {})) if (typeof why === "string") unavailable.set(name, why);
+  return { backends, tasks, unavailable };
+}
+
+// Класс коробки (devuz-box-class: lite / pro / jarvis…). Своя таблица задач
+// на класс — tasks.<класс>.json; нет такой — общая tasks.json.
+function boxClass() {
+  try {
+    const c = JSON.parse(fs.readFileSync(BOX_JSON, "utf8")).class;
+    return typeof c === "string" && /^[a-z-]{2,20}$/.test(c) ? c : null;
+  } catch { return null; }
 }
 
 function loadTasks(prev) {
   // /etc (таблица этой коробки) главнее /usr (заводская). Если в /etc файл
   // есть, но битый — заводскую НЕ берём: оставляем прежнюю таблицу, а при
   // старте работаем без задач и громко пишем в журнал.
-  const f = fs.existsSync(TASKS_ETC) ? TASKS_ETC : TASKS_USR;
+  const cls = boxClass();
+  const byClass = cls && path.join(TASKS_USR_DIR, `tasks.${cls}.json`);
+  const f = fs.existsSync(TASKS_ETC) ? TASKS_ETC : byClass && fs.existsSync(byClass) ? byClass : path.join(TASKS_USR_DIR, "tasks.json");
   try {
-    return checkTasks(JSON.parse(fs.readFileSync(f, "utf8")));
+    const t = checkTasks(JSON.parse(fs.readFileSync(f, "utf8")));
+    t.file = f; t.boxClass = cls || "неизвестен";
+    log("таблица задач", f, "класс коробки", t.boxClass);
+    return t;
   } catch (e) {
     log("ОШИБКА в", f, "—", e.message, prev ? "(оставляю прежнюю таблицу)" : "(задач нет, пока файл не исправят)");
-    return prev || { backends: new Map(), tasks: new Map() };
+    return prev || { backends: new Map(), tasks: new Map(), unavailable: new Map(), file: f, boxClass: cls || "неизвестен" };
   }
 }
 
@@ -183,7 +203,11 @@ async function chat(req, res, app) {
   raw = null;
   if (!body || typeof body !== "object" || Array.isArray(body)) return fail(res, 400, "invalid_request_error", "тело запроса — не объект JSON");
   const task = body.model;
-  if (typeof task !== "string" || !TASKS.tasks.has(task)) return fail(res, 404, "not_found_error", `задачи «${String(task)}» на этой коробке нет`);
+  if (typeof task !== "string" || !TASKS.tasks.has(task)) {
+    // Задача есть на других моделях коробки — сказать, где (магазин покажет).
+    const where = typeof task === "string" && TASKS.unavailable.has(task) ? `: ${TASKS.unavailable.get(task)}` : "";
+    return fail(res, 404, "not_found_error", `задачи «${String(task)}» на этой коробке нет${where}`);
+  }
   if (!app.tasks.has(task)) return fail(res, 403, "permission_error", `приложению «${app.id}» задача «${task}» не разрешена`);
   const route = TASKS.tasks.get(task);
   const be = TASKS.backends.get(route.backend);
@@ -264,7 +288,7 @@ function health(res) {
   const q = {};
   const now = Date.now();
   for (const [name, x] of queues) q[name] = { running: x.running, waiting: x.waiting.length, oldest_wait_s: x.waiting.length ? Math.round((now - Math.min(...x.waiting.map((w) => w.since))) / 1000) : 0 };
-  send(res, 200, { status: "ok", api: "v1", tasks: TASKS.tasks.size, queues: q });
+  send(res, 200, { status: "ok", api: "v1", box_class: TASKS.boxClass, tasks: TASKS.tasks.size, queues: q });
 }
 
 async function handle(req, res) {

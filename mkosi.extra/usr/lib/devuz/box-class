@@ -1,0 +1,49 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Класс коробки: lite / pro / jarvis (в запасе — premium, jarvis-max).
+# /usr один на все модели, поэтому класс не зашит в образ:
+#   1) /etc/devuz/box-class — заводская фиксация (главнее);
+#   2) иначе — по железу: видеокарты NVIDIA (≥2 — jarvis-max, 1 — jarvis),
+#      общая память ≥ 100 ГБ — pro, иначе lite.
+# Пишет /run/devuz/box/box.json (его читает «Ядро») и ставит потолок памяти
+# моделям (devuz-ai.slice) по классу: интерфейсу и базе всегда остаётся
+# запас. Подробности — docs/plans/boxes.md.
+set -eu
+classes="lite pro premium jarvis jarvis-max"
+ram_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+ram_gb=$(( (ram_kb + 524288) / 1048576 ))
+gpus=0
+for d in /sys/bus/pci/devices/*; do
+    [ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] || continue
+    case "$(cat "$d/class" 2>/dev/null)" in 0x0300*|0x0302*) gpus=$((gpus + 1)) ;; esac
+done
+src=hardware
+fixed=$(tr -d ' \n' </etc/devuz/box-class 2>/dev/null || true)
+if [ -n "$fixed" ]; then
+    case " $classes " in *" $fixed "*) class=$fixed; src=factory ;;
+        *) echo "DEVUZ-BOX ERROR /etc/devuz/box-class: неизвестный класс «$fixed», определяю по железу" ;; esac
+fi
+if [ "$src" = hardware ]; then
+    if [ "$gpus" -ge 2 ]; then class=jarvis-max
+    elif [ "$gpus" -ge 1 ]; then class=jarvis
+    elif [ "$ram_gb" -ge 100 ]; then class=pro
+    else class=lite; fi
+fi
+mkdir -p /run/devuz/box
+printf '{"class":"%s","source":"%s","ram_gb":%d,"nvidia_gpus":%d}\n' "$class" "$src" "$ram_gb" "$gpus" >/run/devuz/box/box.json.new
+mv /run/devuz/box/box.json.new /run/devuz/box/box.json
+
+# Потолок памяти моделям. На Лайт и Про память общая с интерфейсом: модели
+# всё, кроме запаса. На Джарвисе модели в видеопамяти, ОЗУ — им до 3/4.
+case "$class" in
+    lite|pro|premium) reserve=6 ;;
+    *) reserve=$(( ram_gb / 4 )) ;;
+esac
+if [ "$ram_gb" -gt $(( reserve + 4 )) ]; then
+    high=$(( ram_gb - reserve )); max=$(( high + 2 ))
+    systemctl set-property --runtime devuz-ai.slice MemoryHigh="${high}G" MemoryMax="${max}G"
+    lim="модели — до ${high} ГБ"
+else
+    lim="памяти мало (${ram_gb} ГБ) — потолок моделям не ставлю"
+fi
+echo "DEVUZ-BOX класс $class ($src), память ${ram_gb} ГБ, NVIDIA: $gpus; $lim"
