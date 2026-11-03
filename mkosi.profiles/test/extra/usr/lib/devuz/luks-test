@@ -1,0 +1,54 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест ключей диска (только тестовый образ, режим devuz.test=luks):
+#  1. ключ из TPM открывает root сейчас — заводим ключ восстановления,
+#     разблокируя заголовок через TPM;
+#  2. меняем PCR 7 (так меняется состояние Secure Boot, когда в прошивке
+#     чужие ключи) — TPM больше не отдаёт ключ;
+#  3. ключ восстановления открывает root и без TPM.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-LUKS $*"; }
+fail=0
+
+dev=""
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] && [ "$(cat "$d/name")" = root ] || continue
+    for s in "$d"/../slaves/*; do dev="/dev/${s##*/}"; done
+done
+[ -b "$dev" ] || { say "ERROR не нашёл раздел под /dev/mapper/root"; say FAIL; exit 1; }
+say "DEVICE $dev"
+
+# 1. TPM открывает заголовок (иначе ключ восстановления не завести).
+out=$(systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$dev" 2>/tmp/enroll.err)
+rkey=$(grep -oE '([cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}' <<<"$out" | head -n1)
+if [ -n "$rkey" ]; then
+    say "TPM_UNLOCK ok"
+    say "RECOVERY_ENROLLED ok"
+else
+    say "ERROR TPM не открыл заголовок или ключ восстановления не заведён:"
+    sed 's/^/  /' /tmp/enroll.err
+    fail=1
+fi
+
+# 2. Другой PCR 7 — как при чужих ключах Secure Boot. Ключ из TPM не должен
+# достаться никому.
+/usr/lib/systemd/systemd-pcrextend --pcr=7 devuz-foreign-secure-boot || { say "ERROR не удалось изменить PCR 7"; fail=1; }
+if systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$dev" >/dev/null 2>/tmp/enroll2.err; then
+    say "ERROR TPM отдал ключ при другом PCR 7"
+    fail=1
+else
+    say "PCR7_CHANGED_TPM_UNLOCK отказ (так и надо)"
+    sed 's/^/  /' /tmp/enroll2.err | tail -n 3
+fi
+
+# 3. Ключ восстановления открывает без TPM.
+if [ -n "$rkey" ] && printf '%s' "$rkey" | cryptsetup open --test-passphrase --key-file=- "$dev"; then
+    say "RECOVERY_OPEN ok"
+else
+    say "ERROR ключ восстановления не открывает root"
+    fail=1
+fi
+
+if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
+systemctl start --no-block devuz-selftest.service
