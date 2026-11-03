@@ -5,5 +5,13 @@
 # включённых юнитов). Метка /etc/.devuz-factory-etc — «уже сделано».
 set -euo pipefail
 cp -a --update=none /usr/share/factory/etc/. /etc/
+# Обрыв питания на середине копирования мог оставить обрезанный файл, а
+# --update=none его бы пропустил. Сверяем: что отличается от заготовки и
+# не создано самим systemd при этой загрузке — перезаписать.
+while IFS= read -r -d '' f; do
+    rel=${f#/usr/share/factory/etc/}
+    case "$rel" in machine-id|systemd/system/*) continue ;; esac
+    cmp -s "$f" "/etc/$rel" || cp -a "$f" "/etc/$rel"
+done < <(find /usr/share/factory/etc -type f -print0)
 touch /etc/.devuz-factory-etc
 echo "DEVUZ-FACTORY-ETC /etc заполнен из заготовки"

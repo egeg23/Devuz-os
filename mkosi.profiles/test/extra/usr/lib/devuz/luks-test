@@ -31,6 +31,13 @@ else
     fail=1
 fi
 
+# TRIM сквозь LUKS (devuz-luks-discard при первой загрузке, аудит Б).
+if cryptsetup luksDump "$dev" | grep -q 'allow-discards'; then
+    say "LUKS_DISCARD ok"
+else
+    say "ERROR в заголовке LUKS нет allow-discards: $(journalctl -b -u devuz-luks-discard --no-pager -n 5 | tail -n 3)"; fail=1
+fi
+
 # 2. Другой PCR 7 — как при чужих ключах Secure Boot. Ключ из TPM не должен
 # достаться никому.
 /usr/lib/systemd/systemd-pcrextend --pcr=7 devuz-foreign-secure-boot || { say "ERROR не удалось изменить PCR 7"; fail=1; }
