@@ -1,0 +1,10 @@
+# Только тестовый образ: служба «зависает» — перестаёт отвечать сторожу
+# (WatchdogSec=), процесс при этом жив.
+[Unit]
+Description=DevUz: тестовая служба, которая зависает
+
+[Service]
+Type=notify
+NotifyAccess=all
+WatchdogSec=3s
+ExecStart=/usr/lib/devuz/demo-hang

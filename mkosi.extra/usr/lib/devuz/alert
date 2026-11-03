@@ -1,0 +1,10 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Служба $1 не поднялась после трёх попыток: записать сигнал (один на
+# каждый такой случай) и вывести строку DEVUZ-ALERT.
+set -eu
+unit=${1:?служба}
+dir=/var/lib/devuz/alerts
+mkdir -p "$dir"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $unit не поднимается после 3 попыток" >>"$dir/$unit"
+echo "DEVUZ-ALERT $unit не поднимается после 3 попыток"

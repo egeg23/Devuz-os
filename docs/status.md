@@ -30,6 +30,7 @@
 - Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`).
 
 - Контейнеры: Podman (Debian 13) + quadlet. `/etc/containers/policy.json` — по умолчанию отказ, из любого реестра только образ с нашей sigstore-подписью (`matchRepository`), ключ `/usr/lib/devuz/keys/containers.pub` (в Actions — тестовый cosign 2.4 на лету, через `--extra-tree`). Тестовый реестр — `registry:2` на раннере, `10.0.2.2:5000` (адрес повешен и на `lo` раннера).
+- Сторож: все долгие службы называются `devuz-svc-*` (и контейнеры quadlet `devuz-svc-*.container`) — по префиксу имени им достаётся `devuz-svc-.service.d/10-watchdog.conf`: `Restart=on-failure` через 2 с, 3 падения за 10 мин — `failed` и один раз `devuz-alert@<служба>` (строка `DEVUZ-ALERT` и файл в `/var/lib/devuz/alerts`).
 
 ## Грабли, на которые уже наступили
 
