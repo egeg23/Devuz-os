@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# systemd-sysupdate: UKI новой версии кладётся в ESP с 3 попытками загрузки
+# (+3). Не дошла до готовности 3 раза — systemd-boot вернёт прошлую версию.
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=url-file
+Path=https://updates.devuz.invalid/os/
+MatchPattern=devuz_@v.efi
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=boot
+MatchPattern=devuz_@v+@l-@d.efi \
+             devuz_@v+@l.efi \
+             devuz_@v.efi
+Mode=0444
+TriesLeft=3
+TriesDone=0
+InstancesMax=2

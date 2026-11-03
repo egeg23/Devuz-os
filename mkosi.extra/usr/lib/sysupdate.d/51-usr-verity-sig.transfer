@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# systemd-sysupdate: раздел usr-verity-sig новой версии пишется в свободный слот
+# (ярлык _empty или старая версия). UUID раздела берётся из имени файла
+# (@u): systemd ищет разделы /usr по UUID, выведенным из usrhash=.
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=url-file
+# Сервер обновлений DevUz ещё не поднят (.invalid — заведомо несуществующий
+# адрес). Тест в Actions подменяет адрес через /etc/sysupdate.d.
+Path=https://updates.devuz.invalid/os/
+MatchPattern=devuz_@v_@u.usr-verity-sig.raw
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=devuz_@v_verity_sig
+MatchPartitionType=usr-verity-sig
+PartitionFlags=0
+ReadOnly=1

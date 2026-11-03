@@ -1,0 +1,87 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Проверить модель перед загрузкой: /var/lib/devuz/models/<имя>/
+#   MANIFEST      — текст: name, version, license, format, и по строке на файл
+#                   «sha256 <хеш> <размер> <файл>»;
+#   MANIFEST.sig  — подпись MANIFEST ключом моделей DevUz
+#                   (/usr/lib/devuz/keys/models.gpg, под verity).
+# Подпись верна, имя в манифесте = имя каталога, каждый файл совпал по
+# размеру и sha256, лишних файлов нет — тогда пишет настройки сервера модели
+# в /run/devuz/llm/llm.env. Иначе — код 78 и строка DEVUZ-MODELS ERROR
+# с причиной (служба devuz-llm-verify падает, сервер модели не стартует).
+# Полный sha256 десятков ГБ — минуты, поэтому после удачной проверки пишем
+# штамп (манифест, подпись и inode/размер/время изменения каждого файла):
+# пока ничего не менялось и штампу меньше 30 дней — хеши не пересчитываем.
+# Подпись проверяется всегда.
+#   models-verify            — модель из /etc/devuz/llm-model;
+#   models-verify <имя>      — эта модель;
+#   models-verify --check <имя> — только проверить, ничего не писать.
+set -u
+shopt -s dotglob nullglob
+root=/var/lib/devuz/models
+stamps=/var/lib/devuz/models-verified
+keyring=/usr/lib/devuz/keys/models.gpg
+fail() { echo "DEVUZ-MODELS ERROR ${name:-?}: $*"; exit 78; }
+
+write=1
+[ "${1:-}" = --check ] && { write=0; shift; }
+name=${1:-$(cat /etc/devuz/llm-model 2>/dev/null || true)}
+[[ "$name" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail "плохое имя модели «$name»"
+dir=$root/$name
+[ -f "$dir/MANIFEST" ] && [ -f "$dir/MANIFEST.sig" ] || fail "нет MANIFEST или MANIFEST.sig в $dir"
+[ -s "$keyring" ] || fail "нет ключа моделей $keyring"
+
+gpgv --keyring "$keyring" "$dir/MANIFEST.sig" "$dir/MANIFEST" 2>/run/devuz-models-gpgv.$$ ||
+    { r=$(grep -m1 -E 'BAD|NO_PUBKEY|bad|not|No public' /run/devuz-models-gpgv.$$); rm -f /run/devuz-models-gpgv.$$; fail "подпись манифеста неверна (${r:-gpgv отказал})"; }
+rm -f /run/devuz-models-gpgv.$$
+
+# Штамп: что именно проверено. Меняется любой файл (даже touch) — штамп не
+# совпадёт, и хеши считаются заново.
+stamp_of() {
+    { cat "$dir/MANIFEST" "$dir/MANIFEST.sig"; stat -c '%n %i %s %Y %Z' "$dir"/* 2>/dev/null; } | sha256sum | cut -d' ' -f1
+}
+want_stamp=$(stamp_of)
+fresh=0
+if [ -f "$stamps/$name" ] && [ "$(cat "$stamps/$name")" = "$want_stamp" ] &&
+   [ -n "$(find "$stamps/$name" -mtime -30 2>/dev/null)" ]; then
+    fresh=1
+fi
+# openssl в несколько раз быстрее sha256sum (аппаратный SHA); нет его — sha256sum.
+if command -v openssl >/dev/null; then hash_of() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
+else hash_of() { sha256sum <"$1" | cut -d' ' -f1; }; fi
+
+declare -A listed=()
+mname="" first=""
+while read -r k a b c rest || [ -n "${k:-}" ]; do
+    case "$k" in
+        ''|'#'*) ;;
+        name:) mname=$a ;;
+        version:|license:|format:) ;;
+        sha256)
+            [[ "$a" =~ ^[0-9a-f]{64}$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[A-Za-z0-9._-]+$ && -z "$rest" ]] ||
+                fail "плохая строка файла в манифесте: $k $a $b $c $rest"
+            f=$dir/$c
+            [ -f "$f" ] && [ ! -L "$f" ] || fail "нет файла $c"
+            [ "$(stat -c %s "$f")" = "$b" ] || fail "$c: размер $(stat -c %s "$f"), в манифесте $b"
+            [ "$fresh" = 1 ] || [ "$(hash_of "$f")" = "$a" ] || fail "$c: sha256 не совпал с манифестом"
+            listed[$c]=1; [ -n "$first" ] || first=$c ;;
+        *) fail "неизвестное поле манифеста «$k»" ;;
+    esac
+done <"$dir/MANIFEST"
+[ "$mname" = "$name" ] || fail "в манифесте имя «$mname», а каталог «$name»"
+[ -n "$first" ] || fail "в манифесте нет файлов"
+for f in "$dir"/*; do
+    b=${f##*/}
+    case "$b" in MANIFEST|MANIFEST.sig) continue ;; esac
+    [ -n "${listed[$b]:-}" ] || fail "лишний файл $b — нет в манифесте"
+done
+if [ "$fresh" = 1 ]; then
+    echo "DEVUZ-MODELS $name: подпись верна, файлы не менялись с прошлой проверки (штамп)"
+else
+    mkdir -p "$stamps"; printf '%s\n' "$want_stamp" >"$stamps/$name"
+    echo "DEVUZ-MODELS $name: подпись и хеши верны"
+fi
+if [ "$write" = 1 ]; then
+    mkdir -p /run/devuz/llm
+    printf 'LLAMA_ARG_MODEL=/models/%s/%s\n' "$name" "$first" >/run/devuz/llm/llm.env
+fi

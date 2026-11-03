@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: система готова
+Documentation=https://github.com/egeg23/devuz-os
+# Отмечает готовность после старта основных служб. boot-complete.target
+# требует эту службу (boot-complete.target.d/10-devuz.conf), а
+# systemd-bless-boot засчитывает загрузку только после boot-complete.target.
+After=multi-user.target
+Before=boot-complete.target
+
+# Не дошли до готовности — перезагрузка. Новая версия получает так 3 попытки
+# (счёт загрузок в имени UKI), потом systemd-boot сам вернёт прошлую.
+# В офисе клиента нет админа: лучше откатиться, чем висеть.
+FailureAction=reboot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/ready
+StandardOutput=journal+console
+
+[Install]
+# boot-complete.target тянется только при счёте загрузок (его включает
+# systemd-bless-boot-generator), поэтому включаем ещё и от multi-user.target.
+WantedBy=multi-user.target
+WantedBy=boot-complete.target

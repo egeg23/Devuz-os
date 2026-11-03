@@ -1,0 +1,21 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Один раз после создания root: разрешить TRIM сквозь LUKS (флаг
+# allow-discards в заголовке LUKS2). Без него SSD со временем замедляется —
+# «лаги» через полгода. Корень открывает gpt-auto, опции crypttab ему не
+# передать — поэтому флаг ставим в сам заголовок.
+set -eu
+if cryptsetup status root 2>/dev/null | grep -q 'flags:.*discards'; then
+    echo "DEVUZ-LUKS-DISCARD уже включён"; mkdir -p /var/lib/devuz; touch /var/lib/devuz/.luks-discard; exit 0
+fi
+# refresh требует ключ тома, как open: сначала пробуем без него (если
+# cryptsetup возьмёт его сам), иначе — через токен TPM (второй unseal).
+if cryptsetup refresh --allow-discards --persistent root </dev/null 2>/dev/null ||
+   cryptsetup refresh --allow-discards --persistent --token-only root </dev/null; then
+    echo "DEVUZ-LUKS-DISCARD TRIM для root включён"
+    mkdir -p /var/lib/devuz; touch /var/lib/devuz/.luks-discard
+else
+    # Загрузку из-за этого не ломаем: повторим при следующей.
+    echo "DEVUZ-LUKS-DISCARD ERROR не удалось включить TRIM, повторю при следующей загрузке"
+    exit 75
+fi

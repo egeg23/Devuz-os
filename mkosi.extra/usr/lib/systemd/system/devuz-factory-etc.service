@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# На свежем root /etc пустой. До всех служб, которые читают /etc
+# (systemd-firstboot, sysusers, tmpfiles), копируем в него заготовку
+# /usr/share/factory/etc — /etc, каким он был при сборке образа.
+# Уже существующие файлы не трогаем.
+[Unit]
+Description=DevUz: /etc из заготовки при первой загрузке
+DefaultDependencies=no
+ConditionPathExists=!/etc/.devuz-factory-etc
+ConditionDirectoryNotEmpty=/usr/share/factory/etc
+After=systemd-remount-fs.service
+Before=sysinit.target shutdown.target systemd-firstboot.service systemd-sysusers.service
+Before=systemd-tmpfiles-setup.service systemd-tmpfiles-setup-dev-early.service systemd-tmpfiles-setup-dev.service
+Before=systemd-machine-id-commit.service first-boot-complete.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/factory-etc
+StandardOutput=journal+console

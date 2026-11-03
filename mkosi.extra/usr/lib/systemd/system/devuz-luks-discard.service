@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: TRIM сквозь шифрование root
+ConditionPathExists=/dev/mapper/root
+ConditionPathExists=!/var/lib/devuz/.luks-discard
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/luks-discard
+# 75 — «не вышло, попробуем в следующий раз»: служба не считается упавшей.
+SuccessExitStatus=75
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

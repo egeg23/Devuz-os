@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# PostgreSQL — база приложений коробки. Контейнер с нашей подписью
+# (политика /etc/containers/policy.json). Наружу не слушает (Network=none):
+# приложения ходят через сокет в /run/devuz/postgres. Данные — на
+# зашифрованном root, /var/lib/devuz/postgres.
+# Вход: по сокету — только «peer» (пользователь ОС = роль базы), пароль
+# суперпользователя — /etc/devuz/postgres/password (0600, создаётся при
+# первом запуске). Доступ к сокету больше не даёт права суперпользователя.
+# Мажорная версия PostgreSQL закреплена (17): другая на тех же данных не
+# стартует — postgres-check остановит службу с понятным сигналом.
+# Имя devuz-svc-* — под сторожем (devuz-svc-.service.d/10-watchdog.conf).
+# Образ — в /usr (под verity), коробке не нужен интернет; имя — в нашем
+# реестре ghcr.io/egeg23 (оттуда — только обновления).
+[Unit]
+Wants=devuz-images.service
+After=devuz-images.service
+Description=DevUz: PostgreSQL
+
+[Container]
+ContainerName=devuz-postgres
+Image=ghcr.io/egeg23/devuz-postgres:17
+# Образ лежит в /usr (devuz-images.service); из сети не тянем.
+Pull=never
+Network=none
+Environment=POSTGRES_PASSWORD_FILE=/run/secrets/pgpass
+Environment="POSTGRES_INITDB_ARGS=--auth-local=peer --auth-host=scram-sha-256"
+Volume=/etc/devuz/postgres/password:/run/secrets/pgpass:ro
+DropCapability=all
+AddCapability=CHOWN DAC_OVERRIDE FOWNER SETGID SETUID
+NoNewPrivileges=true
+PodmanArgs=--oom-score-adj=-900
+Volume=/var/lib/devuz/postgres:/var/lib/postgresql/data
+Volume=/run/devuz/postgres:/var/run/postgresql
+HealthCmd=pg_isready -h /var/run/postgresql
+HealthInterval=10s
+HealthStartPeriod=60s
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /var/lib/devuz/postgres /run/devuz/postgres
+ExecStartPre=/usr/lib/devuz/postgres-check 17
+Slice=devuz-ui.slice
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

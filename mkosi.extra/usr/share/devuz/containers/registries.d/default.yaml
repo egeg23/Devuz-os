@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Подписи контейнеров — в формате sigstore (cosign), рядом с образом в
+# реестре. Политика — /usr/share/devuz/containers/policy.json (в /etc — ссылка): из любого реестра
+# скачивается только образ с нашей подписью (ключ в /usr/lib/devuz/keys).
+default-docker:
+  use-sigstore-attachments: true

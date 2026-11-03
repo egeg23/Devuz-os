@@ -1,0 +1,32 @@
+# Что включено в DevUz OS по умолчанию.
+enable systemd-networkd.service
+enable systemd-networkd.socket
+enable systemd-resolved.service
+enable devuz-ready.service
+enable devuz-luks-discard.service
+# TRIM раз в неделю (allow-discards пропускает его сквозь LUKS).
+enable fstrim.timer
+enable devuz-box-class.service
+# Время: без верных часов не работают сертификаты коробки (Caddy выписывает
+# их на 12 ч) и TLS к серверу обновлений. NTP — из DHCP офиса.
+enable systemd-timesyncd.service
+# Обновления и перезагрузка по таймеру — только когда будет «окно
+# обновлений» из панели (неделя 6–8): иначе sysupdate каждые 2 ч ходит на
+# ненастоящий адрес, а перезагрузка в 4:10 UTC — это 9:10 по Ташкенту.
+disable systemd-sysupdate.timer
+disable systemd-sysupdate-reboot.timer
+# Лишнее из пакетов: API Podman (доступ к нему = root), автообновление
+# контейнеров мимо нашего окна, резерв базы dpkg (её на коробке нет).
+disable podman.socket
+disable podman.service
+disable podman-auto-update.timer
+disable podman-restart.service
+disable netavark-dhcp-proxy.socket
+disable netavark-dhcp-proxy.service
+disable dpkg-db-backup.timer
+# Тестовых служб в боевом образе нет: они только в профиле test
+# (mkosi.profiles/test/).
+# Политику TPM через systemd-pcrlock не используем: привязка диска к TPM —
+# неделя 3, там и решим как. Сейчас эти службы падают в QEMU (swtpm без
+# AES-128-CFB) и на коробке без настроенной политики ничего не дают.
+disable systemd-pcrlock*
