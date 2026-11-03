@@ -29,3 +29,7 @@ http.createServer(async (req, res) => {
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
   res.end(`DevUz Офис (заглушка), данные пишутся: ${data}\n`);
 }).listen(port, "127.0.0.1");
+// Node в контейнере — PID 1: без своего обработчика SIGTERM игнорируется,
+// podman через 10 с убивает (код 137) и служба считается упавшей. Договор:
+// «Офис» сам завершается по SIGTERM.
+process.on("SIGTERM", () => process.exit(0));

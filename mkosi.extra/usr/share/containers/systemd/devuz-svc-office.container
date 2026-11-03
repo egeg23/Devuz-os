@@ -7,7 +7,8 @@
 # Договор с образом: слушает 127.0.0.1:8100 (наружу — только через Caddy),
 # проверка здоровья — `node /app/health.js`, «Ядро» — сокет
 # /run/devuz/core/core.sock и токен из /etc/devuz/office/core-token,
-# данные — /var/lib/devuz/office.
+# данные — /var/lib/devuz/office; по SIGTERM завершается сам (Node — PID 1,
+# без обработчика его убьют через 10 с, и служба будет считаться упавшей).
 [Unit]
 Description=DevUz: «Офис»
 Wants=devuz-svc-core.service
