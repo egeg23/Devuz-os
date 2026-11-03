@@ -49,6 +49,10 @@ rm -f /etc/devuz/core/apps.d/test-models.json; systemctl reload devuz-svc-core.s
 # Веб-интерфейс llama.cpp выключен: к модели — только через «Ядро».
 w=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/)
 [ "$w" != 200 ] && say "WEBUI_OFF ok: / → $w" || { say "ERROR веб-интерфейс модели открыт"; fail=1; }
+# Мимо «Ядра» к модели не пройти: без ключа сервер модели отвечает 401.
+d=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+    -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}' http://127.0.0.1:8081/v1/chat/completions)
+[ "$d" = 401 ] && say "NO_BYPASS ok: напрямую → $d" || { say "ERROR к модели можно мимо «Ядра»: $d"; fail=1; }
 systemctl stop "$llm"
 # Второй запуск — без пересчёта хешей (штамп), подпись проверяется.
 if /usr/lib/devuz/models-verify --check smollm2-135m | grep -q 'штамп'; then say "STAMP_REUSED ok"; else say "ERROR штамп проверки не сработал"; fail=1; fi

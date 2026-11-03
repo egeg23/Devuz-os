@@ -35,6 +35,8 @@ elif command -v gh >/dev/null && gh release view "$tag" >/dev/null 2>&1; then
     ls -1 "$out"/linux-*.deb
     [ -n "${GITHUB_ENV:-}" ] && echo "KERNEL_PINNED=$KERNEL_VERSION" >>"$GITHUB_ENV"
 else
-    msg="Release $tag не найден (или нет gh) — ядро возьмётся из trixie-backports, какое там есть сейчас"
-    if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; else echo "ВНИМАНИЕ: $msg"; fi
+    # Ядро закреплено (есть хеши), а Release нет — не подменяем его молча
+    # чем-то из backports: в образ попало бы не то ядро, что в kernel.lock.
+    echo "Release $tag не найден (или нет gh), а в kernel.lock закреплено ядро $KERNEL_VERSION — сборка остановлена" >&2
+    exit 1
 fi
