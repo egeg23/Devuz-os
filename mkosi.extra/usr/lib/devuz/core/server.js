@@ -27,6 +27,7 @@ const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const anthropic = require(path.join(__dirname, "anthropic.js"));
 
 const TASKS_ETC = "/etc/devuz/core/tasks.json";
 const TASKS_USR_DIR = "/usr/share/devuz/core";
@@ -164,12 +165,16 @@ function send(res, code, obj, extra) {
   res.end(body);
 }
 function fail(res, code, type, message, extra) { send(res, code, { error: { type, message, code: type } }, extra); }
+const failOpenAi = fail;
+// То же — в формате Anthropic (вход /v1/messages).
+function failA(res, code, type, message, extra) { send(res, code, anthropic.errorBody(code, type, message), extra); }
 
 function auth(req) {
-  const h = req.headers.authorization || "";
-  const m = /^Bearer\s+(\S+)$/.exec(h);
-  if (!m) return null;
-  return APPS.get(crypto.createHash("sha256").update(m[1]).digest("hex")) || null;
+  // SDK Anthropic шлёт токен в x-api-key, OpenAI — в Authorization: Bearer.
+  const m = /^Bearer\s+(\S+)$/.exec(req.headers.authorization || "");
+  const k = m ? m[1] : typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"].trim() : "";
+  if (!k) return null;
+  return APPS.get(crypto.createHash("sha256").update(k).digest("hex")) || null;
 }
 
 function readBody(req, limit) {
@@ -202,7 +207,9 @@ function sseUsage() {
   };
 }
 
-async function chat(req, res, app) {
+async function chat(req, res, app, fmt) {
+  const isA = fmt === "anthropic";
+  const fail = isA ? failA : failOpenAi; // ошибки — в формате того входа, куда пришли
   let raw;
   try { raw = await readBody(req, BODY_LIMIT); } catch (e) {
     if (e.tooLarge) { fail(res, 413, "invalid_request_error", `запрос больше ${BODY_LIMIT >> 20} МБ`, { connection: "close" }); req.resume(); return; }
@@ -212,6 +219,9 @@ async function chat(req, res, app) {
   try { body = JSON.parse(raw.toString("utf8")); } catch (e) { return fail(res, 400, "invalid_request_error", "тело запроса — не JSON: " + e.message); }
   raw = null;
   if (!body || typeof body !== "object" || Array.isArray(body)) return fail(res, 400, "invalid_request_error", "тело запроса — не объект JSON");
+  // Anthropic: клиент мог просить поток — ответим потоком событий из готового ответа.
+  const wantStream = isA && body.stream === true;
+  if (isA) body = anthropic.toOpenAiRequest(body);
   const task = body.model;
   if (typeof task !== "string" || !TASKS.tasks.has(task)) {
     // Задача есть на других моделях коробки — сказать, где (магазин покажет).
@@ -264,6 +274,7 @@ async function chat(req, res, app) {
     // запросе: он новый на каждую загрузку коробки.
     if (be.keyFile) { try { hdr.authorization = "Bearer " + fs.readFileSync(be.keyFile, "utf8").trim(); } catch {} }
     const up = mod.request(url, { method: "POST", headers: hdr }, (r) => {
+      if (isA) return relayAnthropic(r);
       res.writeHead(r.statusCode || 502, { "content-type": r.headers["content-type"] || "application/json", "x-devuz-task": task, "x-devuz-priority": prio });
       const sse = stream ? sseUsage() : null;
       const chunks = []; let size = 0;
@@ -287,6 +298,28 @@ async function chat(req, res, app) {
         res.destroy();
       });
     });
+    // Вход Anthropic: ответ бэкенда целиком (не больше 8 МБ) → сообщение Anthropic.
+    const relayAnthropic = (r) => {
+      const parts = []; let size = 0;
+      r.on("data", (c) => { size += c.length; if (size <= 8 << 20) parts.push(c); });
+      r.on("end", () => {
+        if (!r.complete) return;
+        let j = null;
+        try { j = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch {}
+        if (r.statusCode !== 200 || !j || size > 8 << 20) {
+          finish({ status: r.statusCode === 200 ? 502 : r.statusCode });
+          return failA(res, r.statusCode === 200 ? 502 : r.statusCode || 502, "api_error", "модель ответила ошибкой: " + String(j && j.error && j.error.message || r.statusCode).slice(0, 300));
+        }
+        const msg = anthropic.fromOpenAiResponse(j, task);
+        finish({ status: 200, prompt_tokens: msg.usage.input_tokens, completion_tokens: msg.usage.output_tokens });
+        const extra = { "x-devuz-task": task, "x-devuz-priority": prio };
+        if (!wantStream) return send(res, 200, msg, extra);
+        if (res.destroyed) return;
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", ...extra });
+        res.end(anthropic.sseFromMessage(msg));
+      });
+      r.on("close", () => { if (r.complete) return; finish({ status: 502 }); res.destroy(); });
+    };
     // Бэкенд молчит дольше timeout_s (до первого байта или между кусками) — обрыв.
     up.setTimeout(be.timeoutMs, () => up.destroy(Object.assign(new Error(`модель молчит дольше ${be.timeoutMs / 1000} с`), { timeout: true })));
     up.on("error", (e) => {
@@ -314,7 +347,7 @@ async function handle(req, res) {
   const url = new URL(req.url, "http://core");
   if (req.method === "GET" && url.pathname === "/v1/health") return health(res);
   const app = auth(req);
-  if (!app) return fail(res, 401, "authentication_error", "нужен токен приложения (Authorization: Bearer …)", { "www-authenticate": "Bearer" });
+  if (!app) return (url.pathname === "/v1/messages" ? failA : fail)(res, 401, "authentication_error", "нужен токен приложения (Authorization: Bearer … или x-api-key)", { "www-authenticate": "Bearer" });
   const mine = () => [...app.tasks].filter((t) => TASKS.tasks.has(t));
   const model = (t) => ({ id: t, object: "model", owned_by: "devuz" });
   if (req.method === "GET" && url.pathname === "/v1/models") return send(res, 200, { object: "list", data: mine().map(model) });
@@ -323,7 +356,8 @@ async function handle(req, res) {
     try { id = decodeURIComponent(url.pathname.slice("/v1/models/".length)); } catch { return fail(res, 400, "invalid_request_error", "кривое имя задачи в адресе"); }
     return mine().includes(id) ? send(res, 200, model(id)) : fail(res, 404, "not_found_error", `задачи «${id}» нет`);
   }
-  if (req.method === "POST" && url.pathname === "/v1/chat/completions") return chat(req, res, app);
+  if (req.method === "POST" && url.pathname === "/v1/chat/completions") return chat(req, res, app, "openai");
+  if (req.method === "POST" && url.pathname === "/v1/messages") return chat(req, res, app, "anthropic");
   return fail(res, 404, "not_found_error", "нет такого метода в API v1");
 }
 
