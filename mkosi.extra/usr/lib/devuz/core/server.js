@@ -300,7 +300,8 @@ async function handle(req, res) {
   const model = (t) => ({ id: t, object: "model", owned_by: "devuz" });
   if (req.method === "GET" && url.pathname === "/v1/models") return send(res, 200, { object: "list", data: mine().map(model) });
   if (req.method === "GET" && url.pathname.startsWith("/v1/models/")) {
-    const id = decodeURIComponent(url.pathname.slice("/v1/models/".length));
+    let id;
+    try { id = decodeURIComponent(url.pathname.slice("/v1/models/".length)); } catch { return fail(res, 400, "invalid_request_error", "кривое имя задачи в адресе"); }
     return mine().includes(id) ? send(res, 200, model(id)) : fail(res, 404, "not_found_error", `задачи «${id}» нет`);
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return chat(req, res, app);

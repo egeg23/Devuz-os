@@ -46,7 +46,12 @@ else
     say "ERROR ответ модели: $c $(head -c 300 /tmp/real.out)"; fail=1
 fi
 rm -f /etc/devuz/core/apps.d/test-models.json; systemctl reload devuz-svc-core.service
+# Веб-интерфейс llama.cpp выключен: к модели — только через «Ядро».
+w=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/)
+[ "$w" != 200 ] && say "WEBUI_OFF ok: / → $w" || { say "ERROR веб-интерфейс модели открыт"; fail=1; }
 systemctl stop "$llm"
+# Второй запуск — без пересчёта хешей (штамп), подпись проверяется.
+if /usr/lib/devuz/models-verify --check smollm2-135m | grep -q 'штамп'; then say "STAMP_REUSED ok"; else say "ERROR штамп проверки не сработал"; fail=1; fi
 
 # 3. Битые модели не загружаются.
 bad() { # имя ключ команда-порчи

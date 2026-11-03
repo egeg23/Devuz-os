@@ -503,7 +503,7 @@ jobs:
           export TEST_CRED=models EXPECT_VERSION="$DEVUZ_VERSION" LOG=models.log TEST_TITLE="Тест моделей"
           export TEST_TIMEOUT=900
           rc=0; tests/boot-test.sh || rc=$?
-          for k in MODEL_OK REAL_CHAT BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED; do
+          for k in MODEL_OK REAL_CHAT WEBUI_OFF STAMP_REUSED BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED; do
             line=$(grep -m1 -o "DEVUZ-MODELS-TEST $k .*" models.log || true)
             echo "- ${line:-❌ нет DEVUZ-MODELS-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

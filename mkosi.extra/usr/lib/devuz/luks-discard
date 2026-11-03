@@ -8,7 +8,8 @@ set -eu
 if cryptsetup status root 2>/dev/null | grep -q 'flags:.*discards'; then
     echo "DEVUZ-LUKS-DISCARD уже включён"; mkdir -p /var/lib/devuz; touch /var/lib/devuz/.luks-discard; exit 0
 fi
-# Ключ тома — из связки ключей ядра; если его там нет — через токен TPM.
+# refresh требует ключ тома, как open: сначала пробуем без него (если
+# cryptsetup возьмёт его сам), иначе — через токен TPM (второй unseal).
 if cryptsetup refresh --allow-discards --persistent root </dev/null 2>/dev/null ||
    cryptsetup refresh --allow-discards --persistent --token-only root </dev/null; then
     echo "DEVUZ-LUKS-DISCARD TRIM для root включён"

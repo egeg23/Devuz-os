@@ -7,11 +7,16 @@
 # Модели — в фоновом ломте devuz-ai.slice: интерфейс важнее.
 [Unit]
 Description=DevUz: сервер модели (llama.cpp)
+# Модель — не обязательная часть загрузки: multi-user.target её не ждёт
+# (без DefaultDependencies target ждал бы проверку и загрузку многогигабайтной
+# модели, а через 15 минут — перезагрузка и откат версии).
+DefaultDependencies=no
 Wants=devuz-images.service
-After=devuz-images.service
-ConditionPathExists=/etc/devuz/llm-model
+After=basic.target devuz-images.service devuz-llm-verify.service
 Requires=devuz-llm-verify.service
-After=devuz-llm-verify.service
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/etc/devuz/llm-model
 
 [Container]
 ContainerName=devuz-llm
@@ -20,13 +25,17 @@ Pull=never
 Network=host
 Volume=/var/lib/devuz/models:/models:ro
 EnvironmentFile=/run/devuz/llm/llm.env
-Environment=LLAMA_ARG_HOST=127.0.0.1 LLAMA_ARG_PORT=8081 LLAMA_ARG_CTX_SIZE=4096 LLAMA_ARG_NO_WEBUI=1
+Environment=LLAMA_ARG_HOST=127.0.0.1 LLAMA_ARG_PORT=8081 LLAMA_ARG_CTX_SIZE=4096 LLAMA_ARG_N_PARALLEL=1
+# Веб-интерфейс llama.cpp выключен: к модели — только через «Ядро» (токены, очередь, учёт).
+Exec=--no-webui
 DropCapability=all
 NoNewPrivileges=true
 ReadOnly=true
 HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8081/health
 HealthInterval=10s
-HealthStartPeriod=120s
+# Большая модель грузится минутами (/health отвечает 503, пока грузится).
+HealthStartPeriod=600s
+HealthRetries=6
 HealthOnFailure=kill
 Notify=healthy
 
