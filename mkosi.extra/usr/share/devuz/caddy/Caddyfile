@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Вход в коробку. Свой сертификат (tls internal): корневой сертификат
+# коробки ставится на ПК сотрудников при первой настройке (неделя 8).
+{
+	admin 127.0.0.1:2019
+}
+
+https://box.local, https://localhost {
+	tls internal
+	respond "DevUz OK" 200
+}

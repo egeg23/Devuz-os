@@ -193,6 +193,34 @@ jobs:
           echo "## Разметка" >>"$GITHUB_STEP_SUMMARY"
           python3 tests/check-partitions.py "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" "$DEVUZ_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Тестовый реестр контейнеров (на раннере, для всех загрузок)
+        run: |
+          # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
+          # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
+          sudo ip addr add 10.0.2.2/32 dev lo
+          # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
+          # загрузить свой профиль по умолчанию — запускаем реестр без него.
+          docker run -d --name devuz-registry --security-opt apparmor=unconfined \
+            -p 5000:5000 mirror.gcr.io/library/registry:2
+          for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
+          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
+          reg=10.0.2.2:5000/devuz/hello
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.37 "docker://$reg:signed"
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 "docker://$reg:unsigned"
+          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
+          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+            --allow-insecure-registry "$reg@$d"
+          # Службы коробки: в образе — боевые имена registry.devuz.invalid/devuz/…,
+          # тестовый профиль берёт их отсюда. Подпись — на боевое имя.
+          for img in postgres:17 caddy:2; do
+            name=${img%%:*}
+            skopeo copy --dest-tls-verify=false "docker://mirror.gcr.io/library/$img" "docker://10.0.2.2:5000/devuz/$img"
+            d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5000/devuz/$img")
+            COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
+              --allow-insecure-registry --sign-container-identity "registry.devuz.invalid/devuz/$name" \
+              "10.0.2.2:5000/devuz/$name@$d"
+          done
+
       - name: Тест загрузки (до сжатия)
         run: |
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
@@ -257,21 +285,6 @@ jobs:
       - name: Тест контейнеров (подписанный стартует, неподписанный — нет)
         if: env.SABOTAGE == 'none'
         run: |
-          # Тестовый реестр на раннере. Гость видит хост как 10.0.2.2 — тот же
-          # адрес вешаем на lo раннера, чтобы подписывать образ по тому же имени.
-          sudo ip addr add 10.0.2.2/32 dev lo
-          # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
-          # загрузить свой профиль по умолчанию — запускаем реестр без него.
-          docker run -d --name devuz-registry --security-opt apparmor=unconfined \
-            -p 5000:5000 mirror.gcr.io/library/registry:2
-          for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
-          command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
-          reg=10.0.2.2:5000/devuz/hello
-          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.37 "docker://$reg:signed"
-          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 "docker://$reg:unsigned"
-          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
-          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
-            --allow-insecure-registry "$reg@$d"
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=containers EXPECT_VERSION="$DEVUZ_VERSION" LOG=containers.log
           # Служба с неподписанным образом падает нарочно — это часть теста.
@@ -301,6 +314,21 @@ jobs:
           grep -q 'DEVUZ-ALERT devuz-svc-demo-broken.service' watchdog.log ||
             { echo "::error::нет строки DEVUZ-ALERT"; rc=1; }
           grep -q 'DEVUZ-WATCHDOG OK' watchdog.log || { echo "::error::тест сторожа не прошёл"; rc=1; }
+          exit $rc
+
+      - name: Тест служб (PostgreSQL и Caddy работают и переживают перезагрузку)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
+          export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED; do
+            line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
+            echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-SERVICES OK' services.log || { echo "::error::тест служб не прошёл"; rc=1; }
           exit $rc
 
       - name: Тест отката (битое обновление → 3 попытки → старая версия)
@@ -409,6 +437,7 @@ jobs:
             luks.log
             containers.log
             watchdog.log
+            services.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7
