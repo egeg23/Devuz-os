@@ -1,0 +1,5 @@
+#!/bin/bash
+# Только тестовый образ: три ответа сторожу и «зависание».
+systemd-notify --ready
+for i in 1 2 3; do systemd-notify WATCHDOG=1; sleep 1; done
+exec sleep infinity

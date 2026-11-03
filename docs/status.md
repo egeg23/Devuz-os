@@ -30,6 +30,7 @@
 - Secure Boot: `SecureBoot=yes`, `SecureBootAutoEnroll=no` (иначе тестовый ключ уедет в коробку); в тесте `Firmware=uefi-secure-boot` + `FirmwareVariables=custom` (нужен `virt-fw-vars` — добавлен в `mkosi.tools.conf`).
 
 - Контейнеры: Podman (Debian 13) + quadlet. `/etc/containers/policy.json` — по умолчанию отказ, из любого реестра только образ с нашей sigstore-подписью (`matchRepository`), ключ `/usr/lib/devuz/keys/containers.pub` (в Actions — тестовый cosign 2.4 на лету, через `--extra-tree`). Тестовый реестр — `registry:2` на раннере, `10.0.2.2:5000` (адрес повешен и на `lo` раннера).
+- Сторож: все долгие службы называются `devuz-svc-*` (и контейнеры quadlet `devuz-svc-*.container`) — по префиксу имени им достаётся `devuz-svc-.service.d/10-watchdog.conf`: `Restart=on-failure` через 2 с, 3 падения за 10 мин — `failed` и один раз `devuz-alert@<служба>` (строка `DEVUZ-ALERT` и файл в `/var/lib/devuz/alerts`).
 
 ## Грабли, на которые уже наступили
 
@@ -46,6 +47,7 @@
 - systemd-stub 257 дописывает к строке ядра `io.systemd.stub.kernel-cmdline-extra` из SMBIOS и под Secure Boot (отказ только в confidential VM): кто управляет SMBIOS (прошивка, гипервизор), может дописать и `usrhash=`. От того, у кого в руках диск, это не открыто (ESP не влияет на строку ядра подписанного UKI). Прежняя запись «под SB не берёт» была неверной (аудит недели 3).
 - systemd-stub берёт `*.cred` с ESP (`/loader/credentials/`, `<UKI>.extra.d/`) без проверки подписи, а PID1 их импортирует → через `tmpfiles.extra` и т. п. — код от root. Закрыто `systemd.import_credentials=no` в боевом UKI; тестовые механизмы — только в профиле test (аудит недели 3).
 
+- systemd 257: `OnFailure=` срабатывает на каждом падении службы с `Restart=`, даже если её потом поднимут → в правиле сторожа `RestartMode=direct` (сигнал только когда попытки кончились).
 - После действия `systemd/mkosi` на раннере выгружены профили AppArmor: `docker run` без `--security-opt apparmor=unconfined` падает («docker-default profile could not be loaded»).
 
 ## Решения владельца
