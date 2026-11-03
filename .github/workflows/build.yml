@@ -32,7 +32,7 @@ jobs:
       SABOTAGE: ${{ inputs.sabotage || 'none' }}
       WORK: /mnt/devuz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Место на диске и рабочие каталоги
         run: |
@@ -45,7 +45,7 @@ jobs:
           echo "MKOSI_DIRS=--cache-directory=$WORK/cache --output-directory=$WORK/output --workspace-directory=$WORK/workspace" >>"$GITHUB_ENV"
 
       - name: Установить mkosi v27.1
-        uses: systemd/mkosi@v27.1
+        uses: systemd/mkosi@ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b # v27.1
 
       - name: OVMF на раннере (обход ошибки mkosi v27.1)
         run: |
@@ -56,12 +56,13 @@ jobs:
 
       - name: Свежий debian-archive-keyring
         run: |
-          # В Ubuntu 24.04 keyring старый, без ключей trixie. Берём последний
-          # из архива Debian и ставим поверх.
-          pool=http://deb.debian.org/debian/pool/main/d/debian-archive-keyring/
-          deb=$(curl -fsSL "$pool" | grep -oE 'debian-archive-keyring_[0-9][0-9.]*_all\.deb' | sort -uV | tail -n1)
-          echo "Берём $deb"
-          curl -fsSLO "$pool$deb"
+          # В Ubuntu 24.04 keyring старый, без ключей trixie. Это корень доверия
+          # всей сборки, поэтому версия и sha256 закреплены здесь (сверены с
+          # подписанным индексом trixie); новая версия — отдельным PR.
+          deb=debian-archive-keyring_2025.1_all.deb
+          sha=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
+          curl -fsSLO "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$deb"
+          echo "$sha  $deb" | sha256sum --strict -c -
           sudo dpkg -i "$deb"
           dpkg-query -W debian-archive-keyring
           ls -l /usr/share/keyrings/ | grep -i debian
@@ -118,7 +119,7 @@ jobs:
           sudo ip addr replace 10.0.2.2/32 dev lo
           command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
           docker run -d --name devuz-build-registry --security-opt apparmor=unconfined \
-            -p 5001:5000 mirror.gcr.io/library/registry:2
+            -p 5001:5000 mirror.gcr.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           for i in $(seq 30); do curl -fsS http://10.0.2.2:5001/v2/ >/dev/null && break; sleep 1; done
           cfg="$WORK/images-verify"; tree="$WORK/images-tree/usr/share/devuz/images"
           mkdir -p "$cfg/registries.d" "$tree"
@@ -127,10 +128,14 @@ jobs:
           cp mkosi.extra/etc/containers/registries.d/default.yaml "$cfg/registries.d/"
           printf '[[registry]]\nprefix = "ghcr.io/egeg23"\nlocation = "10.0.2.2:5001"\ninsecure = true\n' >"$cfg/registries.conf"
           : >"$tree/images.list"
-          for pair in "mirror.gcr.io/library/postgres:17 devuz-postgres:17" \
-                      "mirror.gcr.io/library/caddy:2 devuz-caddy:2" \
-                      "ghcr.io/tailscale/tailscale:v1.84.3 devuz-tailscale:v1.84.3" \
-                      "mirror.gcr.io/library/node:22-bookworm-slim devuz-node:22"; do
+          # Источники — по точному отпечатку (digest), а не по тегу: что
+          # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
+          # отпечатком (теги в именах справа: postgres 17, caddy 2,
+          # tailscale v1.84.3, node 22-bookworm-slim).
+          for pair in "mirror.gcr.io/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1 devuz-postgres:17" \
+                      "mirror.gcr.io/library/caddy@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e devuz-caddy:2" \
+                      "ghcr.io/tailscale/tailscale@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e devuz-tailscale:v1.84.3" \
+                      "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22"; do
             set -- $pair; src=$1; img=$2; repo=${img%%:*}
             skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
             d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
@@ -143,7 +148,7 @@ jobs:
           # Проверка, что политика при сборке правда работает: неподписанный образ
           # в архив не попадает. (В oci-archive подписи не хранятся —
           # --remove-signatures; проверка подписи идёт до копирования.)
-          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 docker://10.0.2.2:5001/devuz-unsigned:1
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 docker://10.0.2.2:5001/devuz-unsigned:1
           if skopeo --registries-conf "$cfg/registries.conf" --registries.d "$cfg/registries.d" --policy "$cfg/policy.json" \
                copy --remove-signatures --src-tls-verify=false docker://ghcr.io/egeg23/devuz-unsigned:1 "oci-archive:$WORK/unsigned.tar" 2>"$WORK/unsigned.err"; then
             echo "::error::неподписанный образ прошёл проверку при сборке"; exit 1
@@ -247,12 +252,12 @@ jobs:
           # Действие mkosi выгружает профили AppArmor на раннере, и docker не может
           # загрузить свой профиль по умолчанию — запускаем реестр без него.
           docker run -d --name devuz-registry --security-opt apparmor=unconfined \
-            -p 5000:5000 mirror.gcr.io/library/registry:2
+            -p 5000:5000 mirror.gcr.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           for i in $(seq 30); do curl -fsS http://10.0.2.2:5000/v2/ >/dev/null && break; sleep 1; done
           command -v skopeo >/dev/null || sudo apt-get install -y --no-install-recommends skopeo
           reg=10.0.2.2:5000/devuz/hello
-          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.37 "docker://$reg:signed"
-          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox:1.36 "docker://$reg:unsigned"
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec "docker://$reg:signed"
+          skopeo copy --dest-tls-verify=false docker://mirror.gcr.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 "docker://$reg:unsigned"
           d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:signed")
           COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
             --allow-insecure-registry "$reg@$d"
@@ -406,7 +411,7 @@ jobs:
           YAML
           docker run -d --name devuz-headscale --security-opt apparmor=unconfined -p 8085:8085 \
             -v "$hs/config:/etc/headscale" -v "$hs/lib:/var/lib/headscale" -v "$hs/run:/var/run/headscale" \
-            ghcr.io/juanfont/headscale:0.26.1 serve
+            ghcr.io/juanfont/headscale@sha256:ea9b5ee06274d757a4d52103de56cd11a9c393acb19d9a35f4b9fe52ada410de serve
           for i in $(seq 30); do curl -fsS http://10.0.2.2:8085/health >/dev/null && break; sleep 1; done
           docker exec devuz-headscale headscale users create box
           uid=$(docker exec devuz-headscale headscale users list -o json | jq -r '.[] | select(.name=="box") | .id')
@@ -518,9 +523,11 @@ jobs:
 
       - name: Артефакт — образ
         if: env.SABOTAGE == 'none'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: devuz-image-${{ env.DEVUZ_VERSION }}
+          # Боевых ключей ещё нет (неделя 8): образ подписан одноразовыми
+          # ключами этого прогона — ставить на коробку клиента нельзя.
+          name: devuz-image-${{ env.DEVUZ_VERSION }}-testkeys
           path: |
             /mnt/devuz/output-prod/devuz_${{ env.DEVUZ_VERSION }}.raw.zst
           compression-level: 0
@@ -528,9 +535,9 @@ jobs:
 
       - name: Артефакт — UKI и разделы
         if: env.SABOTAGE == 'none'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: devuz-parts-${{ env.DEVUZ_VERSION }}
+          name: devuz-parts-${{ env.DEVUZ_VERSION }}-testkeys
           path: |
             /mnt/devuz/output-prod/*.efi
             /mnt/devuz/output-prod/*.raw.zst
@@ -540,7 +547,7 @@ jobs:
 
       - name: Артефакт — манифест и журнал загрузки
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: devuz-manifest-${{ env.DEVUZ_VERSION }}
           path: |

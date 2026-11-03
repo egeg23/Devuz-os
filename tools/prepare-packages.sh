@@ -15,13 +15,23 @@ rm -f "$out"/*.deb
 dpkg-deb --root-owner-group --build packages/devuz-no-initramfs "$out/" >/dev/null
 echo "Собран $(ls "$out"/devuz-no-initramfs_*.deb)"
 
-# shellcheck disable=SC1091
-. ./kernel.lock
+# kernel.lock — данные: читаем построчно, не выполняем.
+KERNEL_VERSION=$(sed -n 's/^KERNEL_VERSION=//p' kernel.lock)
+[[ "$KERNEL_VERSION" =~ ^[0-9][0-9A-Za-z.~+-]*$ ]] || { echo "kernel.lock: плохая KERNEL_VERSION «$KERNEL_VERSION»" >&2; exit 1; }
+sums=$(sed -n 's/^KERNEL_SHA256=//p' kernel.lock)
 tag="kernel-${KERNEL_VERSION//\~/_}"
 
-if command -v gh >/dev/null && gh release view "$tag" >/dev/null 2>&1; then
+if [ -z "$sums" ]; then
+    msg="в kernel.lock нет KERNEL_SHA256 — ядро из Release не берём, возьмётся из trixie-backports"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$msg"; else echo "ВНИМАНИЕ: $msg"; fi
+elif command -v gh >/dev/null && gh release view "$tag" >/dev/null 2>&1; then
     gh release download "$tag" --pattern '*.deb' --dir "$out" --clobber
-    echo "Ядро $KERNEL_VERSION взято из Release $tag:"
+    # Только пакеты из kernel.lock и только с совпавшим хешем.
+    for f in "$out"/linux-*.deb; do
+        grep -qF " $(basename "$f")" <<<"$sums" || { echo "Release $tag: лишний файл $(basename "$f") — нет в kernel.lock" >&2; exit 1; }
+    done
+    (cd "$out" && sha256sum --strict -c - <<<"$(awk '{print $1"  "$2}' <<<"$sums")")
+    echo "Ядро $KERNEL_VERSION взято из Release $tag, хеши совпали с kernel.lock:"
     ls -1 "$out"/linux-*.deb
     [ -n "${GITHUB_ENV:-}" ] && echo "KERNEL_PINNED=$KERNEL_VERSION" >>"$GITHUB_ENV"
 else
