@@ -6,6 +6,7 @@
 #   luks                             — ключи диска: TPM, чужой PCR 7, ключ восстановления;
 #   containers                       — подписанный контейнер стартует, неподписанный нет;
 #   watchdog                         — сторож: убитая и зависшая служба поднимаются, вечно падающая — сигнал;
+#   services                         — PostgreSQL и Caddy работают и переживают перезагрузку;
 #   emergency                        — ручная проверка теста: уйти в аварийный режим.
 set -u
 cred="$(cat "${CREDENTIALS_DIRECTORY:-/run/credentials/devuz-test.service}/devuz.test" 2>/dev/null || true)"
@@ -17,6 +18,7 @@ case "$mode" in
     luks)     exec /usr/lib/devuz/luks-test ;;
     containers) exec /usr/lib/devuz/containers-test ;;
     watchdog) exec /usr/lib/devuz/watchdog-test ;;
+    services) exec /usr/lib/devuz/services-test ;;
     emergency) systemctl --no-block isolate emergency.target ;;
     *)        echo "DEVUZ-TEST ERROR неизвестный режим «$mode»"; exit 1 ;;
 esac

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Caddy — вход в коробку: https://box.local в сети офиса, свой сертификат
+# коробки (tls internal, корневой — в /var/lib/devuz/caddy). Контейнер с
+# нашей подписью, под сторожем (имя devuz-svc-*).
+[Unit]
+Description=DevUz: Caddy (вход https)
+
+[Container]
+ContainerName=devuz-caddy
+Image=registry.devuz.invalid/devuz/caddy:2
+Network=host
+Volume=/usr/share/devuz/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+Volume=/var/lib/devuz/caddy:/data
+HealthCmd=wget -q -O /dev/null http://127.0.0.1:2019/config/
+HealthInterval=10s
+HealthStartPeriod=30s
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /var/lib/devuz/caddy
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
