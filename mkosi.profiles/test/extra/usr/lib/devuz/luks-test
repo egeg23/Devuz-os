@@ -37,9 +37,14 @@ fi
 if systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$dev" >/dev/null 2>/tmp/enroll2.err; then
     say "ERROR TPM отдал ключ при другом PCR 7"
     fail=1
-else
+elif grep -qE 'Failed to unseal secret using TPM2|No TPM2 metadata matching the current system state' /tmp/enroll2.err; then
+    # Отказ именно TPM по политике (systemd 257), а не любая другая ошибка.
     say "PCR7_CHANGED_TPM_UNLOCK отказ (так и надо)"
     sed 's/^/  /' /tmp/enroll2.err | tail -n 3
+else
+    say "ERROR отказ, но не по политике TPM:"
+    sed 's/^/  /' /tmp/enroll2.err
+    fail=1
 fi
 
 # 3. Ключ восстановления открывает без TPM.

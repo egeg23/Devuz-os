@@ -212,8 +212,11 @@ jobs:
           export TEST_TITLE="Тест обновления A→B"
           rc=0; tests/boot-test.sh || rc=$?
           grep -q 'DEVUZ-UPDATE INSTALLED' update.log || { echo "::error::sysupdate не поставил обновление"; rc=1; }
-          if grep -q 'Good signature' update.log; then
-            echo "- подпись SHA256SUMS.gpg проверена: \`$(grep -m1 -o 'Good signature.*' update.log)\`" >>"$GITHUB_STEP_SUMMARY"
+          # Только вывод после DEVUZ-UPDATE START: подпись должна проверить
+          # сама установка, а не предварительный «list».
+          sed -n '/DEVUZ-UPDATE START/,$p' update.log >update-install.log
+          if grep -q 'Good signature' update-install.log; then
+            echo "- подпись SHA256SUMS.gpg проверена: \`$(grep -m1 -o 'Good signature.*' update-install.log)\`" >>"$GITHUB_STEP_SUMMARY"
           else
             echo "::error::нет «Good signature» — подпись обновления не проверялась"; rc=1
           fi
