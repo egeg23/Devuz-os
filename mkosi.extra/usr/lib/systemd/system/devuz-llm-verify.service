@@ -5,6 +5,10 @@
 # один раз. Перезапуск сервера модели проверяет модель заново.
 [Unit]
 Description=DevUz: проверка модели (подпись и хеши)
+DefaultDependencies=no
+After=basic.target
+Conflicts=shutdown.target
+Before=shutdown.target
 ConditionPathExists=/etc/devuz/llm-model
 PartOf=devuz-svc-llm.service
 OnFailure=devuz-alert@%n.service
@@ -13,4 +17,9 @@ OnFailure=devuz-alert@%n.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/lib/devuz/models-verify
+# Хеширование десятков ГБ — в фоне: интерфейс и база важнее.
+Slice=devuz-ai.slice
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=30min
 StandardOutput=journal+console
