@@ -6,7 +6,8 @@
 #  1. «Офис» включается файлом, образ берётся из реестра с проверкой подписи;
 #  2. открывается через Caddy (https://localhost/);
 #  3. ходит в «Ядро» по сокету со своим токеном (вход Anthropic);
-#  4. токен — 0600, в «Ядре» — только отпечаток с приоритетом live;
+#  4. токен — 0600, в «Ядре» — только отпечаток с приоритетом live; код
+#     первого входа — 0600 и не в журнале;
 #  5. «Офис» остановлен — Caddy показывает страницу коробки.
 set -u
 say() { echo "DEVUZ-OFFICE-TEST $*"; }
@@ -28,6 +29,12 @@ if [ "$m" = 600 ] && grep -q '"priority":"live"' /etc/devuz/core/apps.d/office.j
     say "TOKEN ok: 0600, в «Ядре» только отпечаток"
 else
     say "ERROR токен: права $m"; fail=1
+fi
+sc=$(cat /etc/devuz/office/setup-code 2>/dev/null)
+if [ "$(stat -c %a /etc/devuz/office/setup-code 2>/dev/null)" = 600 ] && [[ "$sc" =~ ^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$ ]] && ! journalctl -b --no-pager | grep -qF "$sc"; then
+    say "SETUP_CODE ok: 0600, в журнале его нет"
+else
+    say "ERROR код первого входа: права $(stat -c %a /etc/devuz/office/setup-code 2>&1)"; fail=1
 fi
 # База «Офиса»: роль office входит по паролю в свою базу; без пароля и в чужую базу — нет.
 pw=$(cat /etc/devuz/office/db-password 2>/dev/null)
