@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# «Позвать человека»: служба %i не поднялась после трёх попыток.
+# Пока — строка в журнал и на консоль и файл в /var/lib/devuz/alerts;
+# отправка владельцу в бот и в «Состояние» — неделя 8.
+[Unit]
+Description=DevUz: сигнал — служба %i не поднимается
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/alert %i
+StandardOutput=journal+console

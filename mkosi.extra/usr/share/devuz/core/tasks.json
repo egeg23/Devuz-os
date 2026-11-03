@@ -1,0 +1,11 @@
+{
+  "_": "Таблица коробки: задача → бэкенд и модель. Своя на каждую коробку (Лайт, Про, Джарвис) — /etc/devuz/core/tasks.json перекрывает этот файл. Облака здесь нет.",
+  "backends": {
+    "llm": { "url": "http://127.0.0.1:8081/v1", "concurrency": 1, "max_queue": 32, "timeout_s": 120 }
+  },
+  "tasks": {
+    "chat":    { "backend": "llm", "model": "chat" },
+    "chat-uz": { "backend": "llm", "model": "chat" },
+    "code":    { "backend": "llm", "model": "chat" }
+  }
+}

@@ -1,0 +1,9 @@
+# Проводная сеть: адрес по DHCP.
+[Match]
+Type=ether
+Kind=!*
+
+[Network]
+DHCP=yes
+# Имя devuz.local — объявлять в сети офиса.
+MulticastDNS=yes

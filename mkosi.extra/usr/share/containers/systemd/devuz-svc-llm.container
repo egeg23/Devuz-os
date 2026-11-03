@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Сервер модели: llama.cpp (llama-server, MIT), OpenAI-совместимый, только
+# на 127.0.0.1:8081 — к нему ходит «Ядро» (бэкенд llm в tasks.json).
+# Какая модель — /etc/devuz/llm-model (имя каталога в /var/lib/devuz/models).
+# Модель грузится, только если подпись манифеста и хеши файлов верны
+# (devuz-llm-verify.service); нет — сервер не стартует, сигнал один раз.
+# Модели — в фоновом ломте devuz-ai.slice: интерфейс важнее.
+[Unit]
+Description=DevUz: сервер модели (llama.cpp)
+# Модель — не обязательная часть загрузки: multi-user.target её не ждёт
+# (без DefaultDependencies target ждал бы проверку и загрузку многогигабайтной
+# модели, а через 15 минут — перезагрузка и откат версии).
+DefaultDependencies=no
+Wants=devuz-images.service
+After=basic.target devuz-images.service devuz-llm-verify.service
+Requires=devuz-llm-verify.service
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/etc/devuz/llm-model
+
+[Container]
+ContainerName=devuz-llm
+Image=ghcr.io/egeg23/devuz-llama:server
+Pull=never
+Network=host
+Volume=/var/lib/devuz/models:/models:ro
+EnvironmentFile=/run/devuz/llm/llm.env
+Environment=LLAMA_ARG_HOST=127.0.0.1 LLAMA_ARG_PORT=8081 LLAMA_ARG_CTX_SIZE=4096 LLAMA_ARG_N_PARALLEL=1
+# Веб-интерфейс llama.cpp выключен: к модели — только через «Ядро» (токены, очередь, учёт).
+Exec=--no-webui
+DropCapability=all
+NoNewPrivileges=true
+ReadOnly=true
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8081/health
+HealthInterval=10s
+# Большая модель грузится минутами (/health отвечает 503, пока грузится).
+HealthStartPeriod=600s
+HealthRetries=6
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+Slice=devuz-ai.slice
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

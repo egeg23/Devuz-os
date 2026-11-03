@@ -1,0 +1,12 @@
+{
+  "_": "Джарвис (96 ГБ видеопамяти + 128 ГБ, до 50 человек). Видео, голос, 3D — когда появятся их серверы (NVIDIA — по появлению железа). /etc/devuz/core/tasks.json перекрывает этот файл.",
+  "backends": {
+    "llm": { "url": "http://127.0.0.1:8081/v1", "concurrency": 8, "max_queue": 50, "timeout_s": 120 }
+  },
+  "tasks": {
+    "chat":    { "backend": "llm", "model": "chat" },
+    "chat-uz": { "backend": "llm", "model": "chat" },
+    "code":    { "backend": "llm", "model": "chat" }
+  },
+  "unavailable": {}
+}

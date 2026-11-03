@@ -1,0 +1,7 @@
+#!/bin/sh
+# Печатает строку готовности: DEVUZ-READY <IMAGE_VERSION> <BUILD_ID>.
+# Последнее поле — сколько секунд прошло с включения ядра.
+set -eu
+. /usr/lib/os-release
+up=$(cut -d' ' -f1 /proc/uptime)
+echo "DEVUZ-READY ${IMAGE_VERSION:-unknown} ${BUILD_ID:-unknown} uptime=${up}s"

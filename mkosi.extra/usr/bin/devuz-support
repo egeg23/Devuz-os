@@ -1,0 +1,90 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Кнопка «Доступ поддержки: вкл / выкл» (из панели и бота — неделя 6–8).
+#   devuz-support on     — включить канал (переживает перезагрузку);
+#   devuz-support off    — выключить: клиент Tailscale остановлен;
+#   devuz-support status — on / off / on-failed (метка стоит, а клиент
+#                          не работает: при следующей загрузке он поднимется).
+# Служебное (вызывает сама служба, не человек):
+#   devuz-support prepare — собрать настройки клиента из /etc/devuz/support.env;
+#   devuz-support event <текст> — строка в журнал клиента.
+#
+# Что открывает канал, решает ОС, а не файл настроек: из
+# /etc/devuz/support.env берутся только адрес сервера (https) и ключ входа,
+# всё остальное (маршруты, выход в интернет, SSH, прокси) не передаётся.
+# Каждое включение, выключение и фактический запуск/остановка клиента —
+# строка в журнал клиента /var/lib/devuz/support.log и в системный журнал.
+set -eu
+mark=/var/lib/devuz/support-on
+log=/var/lib/devuz/support.log
+conf=/etc/devuz/support.env
+run=/run/devuz/support
+unit=devuz-svc-tailscale.service
+
+note() {
+    mkdir -p /var/lib/devuz
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $1" >>"$log"
+    logger -t devuz-support -p auth.notice -- "$1" 2>/dev/null || true
+    echo "DEVUZ-SUPPORT $1"
+}
+
+# Читаем support.env как данные, а не как код: только две строки вида
+# SUPPORT_SERVER=https://… и SUPPORT_KEY=…, остальное — ошибка.
+prepare() {
+    [ -s "$conf" ] || { echo "нет $conf (сервер и ключ поддержки)" >&2; return 1; }
+    local server="" key="" line k v
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        k=${line%%=*}; v=${line#*=}
+        case "$k" in
+            SUPPORT_SERVER) server=$v ;;
+            SUPPORT_KEY) key=$v ;;
+            *) echo "$conf: недопустимая строка «$k» — разрешены только SUPPORT_SERVER и SUPPORT_KEY" >&2; return 1 ;;
+        esac
+    done <"$conf"
+    # Сервер — только https (адрес без пробелов и кавычек). Тестовый образ
+    # разрешает http: файл /usr/lib/devuz/support-allow-http есть только в нём.
+    if [[ ! "$server" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]]; then
+        if [ -e /usr/lib/devuz/support-allow-http ] && [[ "$server" =~ ^http://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]]; then
+            :
+        else
+            echo "SUPPORT_SERVER должен быть https://<сервер>[:порт], сейчас: «$server»" >&2; return 1
+        fi
+    fi
+    [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "SUPPORT_KEY пустой или с лишними знаками" >&2; return 1; }
+    mkdir -p "$run"; chmod 700 "$run"
+    ( umask 077; printf 'TS_AUTHKEY=%s\nTS_EXTRA_ARGS=--login-server=%s\n' "$key" "$server" >"$run/ts.env.new" )
+    mv "$run/ts.env.new" "$run/ts.env"
+}
+
+case "${1:-status}" in
+    on)
+        prepare
+        mkdir -p /var/lib/devuz && touch "$mark"
+        note "доступ поддержки: включаю"
+        systemctl reset-failed "$unit" 2>/dev/null || true
+        if ! systemctl start "$unit"; then
+            rm -f "$mark"
+            note "доступ поддержки: НЕ включился, метка снята"
+            exit 1
+        fi
+        note "доступ поддержки включён"
+        ;;
+    off)
+        note "доступ поддержки: выключаю"
+        rm -f "$mark"
+        systemctl stop "$unit"
+        rm -f "$run/ts.env"
+        note "доступ поддержки выключен"
+        ;;
+    status)
+        if [ -e "$mark" ]; then
+            if systemctl is-active --quiet "$unit"; then echo on; else echo on-failed; fi
+        else
+            echo off
+        fi
+        ;;
+    prepare) prepare ;;
+    event) note "${2:?текст}" ;;
+    *) echo "использование: devuz-support on|off|status" >&2; exit 2 ;;
+esac

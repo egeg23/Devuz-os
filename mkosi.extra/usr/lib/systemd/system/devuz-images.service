@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Образы служб — в /usr/share/devuz/images (под verity, вместе с системой):
+# коробке не нужен интернет ни при первой загрузке, ни после обновления.
+# Загружаем их в хранилище Podman, если этой версии там ещё нет.
+[Unit]
+Description=DevUz: образы служб из /usr
+After=local-fs.target
+ConditionPathExists=/usr/share/devuz/images/images.list
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/images-load
+StandardOutput=journal+console

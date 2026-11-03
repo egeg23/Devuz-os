@@ -1,0 +1,23 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Перед запуском PostgreSQL: (1) пароль суперпользователя — создать один раз
+# (0600, в /etc/devuz/postgres); (2) мажорная версия данных совпадает с
+# образом. Другой мажор на тех же данных не стартует и портит попытки
+# сторожа — останавливаемся сразу с понятным сигналом, данные не трогаем.
+set -eu
+want=${1:?мажорная версия}
+data=/var/lib/devuz/postgres
+pw=/etc/devuz/postgres/password
+if [ ! -s "$pw" ]; then
+    mkdir -p "${pw%/*}"; chmod 700 "${pw%/*}"
+    ( umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n=/+' >"$pw.new" )
+    mv "$pw.new" "$pw"
+    echo "DEVUZ-POSTGRES пароль суперпользователя создан: $pw"
+fi
+if [ -s "$data/PG_VERSION" ]; then
+    have=$(cat "$data/PG_VERSION")
+    if [ "$have" != "$want" ]; then
+        echo "DEVUZ-ALERT PostgreSQL: данные версии $have, а образ — $want. Нужна миграция (pg_dumpall → новая база); служба не запущена, данные не тронуты."
+        exit 1
+    fi
+fi
