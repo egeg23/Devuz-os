@@ -77,6 +77,8 @@ case "${1:-status}" in
         note "выход наружу: выключаю"
         rm -f "$mark"
         systemctl stop "$unit"
+        # Выключили сами — прошлые сбои (не было связи, неверный ключ) больше не сбой.
+        systemctl reset-failed "$unit" 2>/dev/null || true
         rm -f "$run/tunnel.env"
         note "выход наружу выключен"
         ;;

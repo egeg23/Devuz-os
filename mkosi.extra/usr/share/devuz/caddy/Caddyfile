@@ -22,12 +22,15 @@ https://devuz.local, https://localhost {
 }
 
 # Внешний вход: сюда и только сюда ведёт туннель (devuz-svc-cloudflared).
-# Слушает только 127.0.0.1 — из сети офиса его не видно. TLS снаружи держит
+# Слушает только 127.0.0.1 (bind: адрес сайта в Caddy сам по себе слушает
+# все адреса) — из сети офиса его не видно. Имя сайта любое: cloudflared
+# присылает внешнее имя коробки (box-….devuz…). TLS снаружи держит
 # Cloudflare. Каждый запрос помечается X-Devuz-Via: tunnel (подделанная
 # клиентом метка затирается), адрес посетителя — из Cf-Connecting-IP (его
 # ставит Cloudflare). Что пускать снаружи (события Meta, виджет сайта, сам
 # «Офис» для телефонов — переключателем), решает «Офис».
-http://127.0.0.1:8180 {
+http://:8180 {
+	bind 127.0.0.1
 	reverse_proxy 127.0.0.1:8100 {
 		header_up X-Devuz-Via tunnel
 		header_up X-Forwarded-For {http.request.header.Cf-Connecting-IP}
