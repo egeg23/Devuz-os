@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# «Состояние коробки» для «Офиса»: раз в минуту пишет /run/devuz/status/box.json
+# (только чтение для «Офиса»). Ни секретов, ни данных клиентов — только
+# числа и состояния: версия, память, диск, модель, службы, копии, выход
+# наружу, канал поддержки.
+set -u
+out=/run/devuz/status
+mkdir -p "$out"; chmod 755 "$out"
+. /usr/lib/os-release
+esc() { printf '%s' "$1" | tr -d '\000-\037' | sed 's/[\\"]/\\&/g'; }
+
+up=$(cut -d. -f1 /proc/uptime)
+load=$(cut -d' ' -f1 /proc/loadavg)
+threads=$(nproc)
+mem_total=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+mem_avail=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
+read -r disk_total disk_used < <(df -B1M --output=size,used /var | tail -n1)
+class=$(sed -n 's/.*"class":"\([a-z-]*\)".*/\1/p' /run/devuz/box/box.json 2>/dev/null)
+model=$( { tr -cd "A-Za-z0-9._-" </etc/devuz/llm-model; } 2>/dev/null | head -c 80)
+model_mb=0
+[ -n "$model" ] && [ -d "/var/lib/devuz/models/$model" ] && model_mb=$(du -sm "/var/lib/devuz/models/$model" 2>/dev/null | cut -f1)
+
+svc=""
+for u in caddy core llm office postgres cloudflared tailscale; do
+    st=$(systemctl is-active "devuz-svc-$u.service" 2>/dev/null); st=${st:-inactive}
+    svc="$svc${svc:+,}\"$u\":\"$st\""
+done
+backup='{}'
+command -v devuz-backup >/dev/null && backup=$(devuz-backup status 2>/dev/null || echo '{}')
+[[ "$backup" == \{* ]] || backup='{}'
+tunnel=absent; url=""
+if command -v devuz-tunnel >/dev/null; then tunnel=$(devuz-tunnel status 2>/dev/null || echo off); url=$(cat /etc/devuz/tunnel/url 2>/dev/null || true); fi
+support=$(devuz-support status 2>/dev/null || echo off)
+
+printf '{"at":"%s","version":"%s","uptime_s":%d,"class":"%s","box_id":"%s","cpu":{"threads":%d,"load1":%s},"mem":{"total_mb":%d,"used_mb":%d},"disk":{"total_mb":%d,"used_mb":%d},"model":{"name":"%s","size_mb":%d},"services":{%s},"backup":%s,"tunnel":{"state":"%s","url":"%s"},"support":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(esc "${IMAGE_VERSION:-unknown}")" "$up" "$(esc "$class")" "$(head -c 12 /etc/machine-id)" \
+    "$threads" "$load" "$mem_total" "$((mem_total - mem_avail))" "$disk_total" "$disk_used" "$(esc "$model")" "${model_mb:-0}" \
+    "$svc" "$backup" "$(esc "$tunnel")" "$(esc "$url")" "$(esc "$support")" >"$out/box.json.new"
+chmod 644 "$out/box.json.new"
+mv "$out/box.json.new" "$out/box.json"

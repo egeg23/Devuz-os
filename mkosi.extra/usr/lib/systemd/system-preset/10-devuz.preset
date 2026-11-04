@@ -6,6 +6,8 @@ enable devuz-ready.service
 enable devuz-luks-discard.service
 # TRIM раз в неделю (allow-discards пропускает его сквозь LUKS).
 enable fstrim.timer
+# «Состояние коробки» для «Офиса» раз в минуту.
+enable devuz-status.timer
 enable devuz-box-class.service
 # Время: без верных часов не работают сертификаты коробки (Caddy выписывает
 # их на 12 ч) и TLS к серверу обновлений. NTP — из DHCP офиса.
