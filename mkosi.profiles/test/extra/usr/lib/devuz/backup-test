@@ -1,0 +1,83 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест копий данных (только тестовый образ, режим
+# devuz.test=backup,<адрес S3 на раннере>,<ключ доступа>:<секрет>):
+#  1. без диска и облака копия ничего не ломает, ключ копий создаётся (0600)
+#     и передаётся «Офису»;
+#  2. диск для копий готовится командой (метка DEVUZ-BACKUP), копия идёт на
+#     диск и в облако, после копии диск отмонтирован;
+#  3. на диске нет открытого текста данных, чужой ключ копию не открывает;
+#  4. данные (база и файлы «Офиса») стёрты → восстановлены с диска, потом
+#     из облака;
+#  5. лишнее в cloud.env не принимается; ночной таймер включён.
+# Потом — обычная самопроверка.
+set -u
+say() { echo "DEVUZ-BACKUP-TEST $*"; }
+fail=0
+s3=${1:?адрес S3}
+keys=${2:?ключ:секрет}
+case "$s3" in http://10.0.2.2:[0-9]*/*) ;; *) say "ERROR адрес не тестовый: $s3"; exit 1 ;; esac
+pgx() { podman exec -u postgres devuz-postgres psql -U postgres -tAq "$@"; }
+for i in $(seq 90); do podman exec devuz-postgres pg_isready -q -h /var/run/postgresql 2>/dev/null && break; sleep 2; done
+mkdir -p /etc/devuz/office /var/lib/devuz/office
+
+# 1. Ничего не настроено.
+if devuz-backup run && [ "$(stat -c %a /etc/devuz/backup/password)" = 600 ] && cmp -s /etc/devuz/backup/password /etc/devuz/office/backup-key &&
+   devuz-backup status | grep -q '"usb":{"result":"none"' && devuz-backup status | grep -q '"cloud":{"result":"none"'; then
+    say "NOTHING_CONFIGURED ok: ключ $(sed 's/[A-Z0-9]/•/g' /etc/devuz/backup/password) (0600, «Офису» — тоже)"
+else
+    say "ERROR без мест для копий: $(devuz-backup status)"; fail=1
+fi
+systemctl is-enabled --quiet devuz-backup.timer && say "TIMER ok: $(systemctl show -p TimersCalendar --value devuz-backup.timer | head -c 80)" || { say "ERROR таймер копий выключен"; fail=1; }
+
+# 2. Диск и облако.
+truncate -s 400M /var/tmp/usb.img
+loop=$(losetup -f --show /var/tmp/usb.img)
+if devuz-backup prepare-usb "$loop" 2>/dev/null; then say "ERROR диск стёрт без --yes"; fail=1; fi
+devuz-backup prepare-usb "$loop" --yes
+for i in $(seq 20); do [ -e /dev/disk/by-label/DEVUZ-BACKUP ] && break; sleep 0.5; done
+( umask 077; printf 'BACKUP_S3=%s\nBACKUP_S3_KEY_ID=%s\nBACKUP_S3_SECRET=%s\n' "$s3" "${keys%%:*}" "${keys#*:}" >/etc/devuz/backup/cloud.env )
+pgx -c "create database probe" && pgx -d probe -c "create table t(v text); insert into t values ('секрет до копии')"
+echo 'секрет файла до копии' >/var/lib/devuz/office/probe.txt
+if devuz-backup run && devuz-backup status | grep -q '"usb":{"result":"ok"' && devuz-backup status | grep -q '"cloud":{"result":"ok"'; then
+    say "BACKUP_OK ok: $(devuz-backup status)"
+else
+    say "ERROR копия: $(devuz-backup status)"; tail -n 20 /var/lib/devuz/backup/last-*.log; fail=1
+fi
+mountpoint -q /run/devuz/backup-usb && { say "ERROR диск остался смонтирован"; fail=1; } || say "USB_UNMOUNTED ok"
+
+# 3. Зашифровано.
+mkdir -p /run/t-usb && mount -o ro /dev/disk/by-label/DEVUZ-BACKUP /run/t-usb
+repo=/run/t-usb/devuz-$(devuz-backup id)
+if [ -d "$repo/data" ] && ! grep -rqa 'секрет' /run/t-usb; then
+    say "ENCRYPTED ok: открытого текста на диске нет ($(du -sh "$repo" | cut -f1))"
+else
+    say "ERROR на диске виден текст или нет хранилища"; fail=1
+fi
+if RESTIC_PASSWORD=AAAA-BBBB-CCCC-DDDD-EEEE-FFFF restic -r "$repo" snapshots >/dev/null 2>&1; then
+    say "ERROR чужой ключ открыл копию"; fail=1
+else
+    say "WRONG_KEY_REFUSED ok"
+fi
+umount /run/t-usb
+
+# 4. Восстановление: с диска, потом из облака.
+for where in usb cloud; do
+    pgx -d probe -c "delete from t"; rm -f /var/lib/devuz/office/probe.txt
+    if devuz-backup restore "$where" >/tmp/restore.log 2>&1 && [ "$(pgx -d probe -c 'select v from t')" = 'секрет до копии' ] &&
+       [ "$(cat /var/lib/devuz/office/probe.txt 2>/dev/null)" = 'секрет файла до копии' ]; then
+        say "RESTORE_${where^^} ok: база и файлы «Офиса» вернулись"
+    else
+        say "ERROR восстановление ($where): «$(pgx -d probe -c 'select v from t' 2>&1)» «$(cat /var/lib/devuz/office/probe.txt 2>&1)»"; tail -n 20 /tmp/restore.log; fail=1
+    fi
+done
+
+# 5. Лишнее в cloud.env — не принимается.
+printf 'BACKUP_S3_EXTRA=--insecure\n' >>/etc/devuz/backup/cloud.env
+if devuz-backup run >/tmp/strict.log 2>&1; then say "ERROR лишняя строка в cloud.env принята"; fail=1
+elif devuz-backup status | grep -q '"cloud":{"result":"error"'; then say "CLOUD_ENV_STRICT ok"
+else say "ERROR cloud.env: $(devuz-backup status)"; fail=1; fi
+
+losetup -d "$loop" 2>/dev/null || true
+[ "$fail" = 0 ] && say "OK" || say "FAIL"
+systemctl start --no-block devuz-selftest.service

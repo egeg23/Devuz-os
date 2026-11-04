@@ -1,0 +1,248 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Копии данных коробки (Restic). Решение владельца 04.11: диск в офисе и
+# облако DevUz. Копия шифруется ключом клиента: без него ни DevUz, ни тот,
+# кто унёс диск, её не прочитает. Ключ создаётся при первой копии, лежит на
+# коробке (/etc/devuz/backup/password, 0600) и показывается руководителю в
+# «Офисе» — его надо распечатать и хранить вне коробки: коробка сгорела —
+# без ключа копии не открыть.
+#
+#   devuz-backup run               — сделать копию сейчас (ночью — по таймеру);
+#   devuz-backup status            — когда и куда была последняя копия (JSON);
+#   devuz-backup snapshots usb|cloud — список копий;
+#   devuz-backup restore usb|cloud [копия] — вернуть данные из копии
+#                                    (по умолчанию последней): базы, «Офис», настройки.
+#   devuz-backup prepare-usb /dev/sdX --yes — подготовить новый диск для
+#                                    копий: всё на нём стирается, файловая
+#                                    система ext4 с меткой DEVUZ-BACKUP;
+#   devuz-backup key-set           — новая коробка вместо сгоревшей: ключ копий
+#                                    с листа (на stdin); копии старой коробки —
+#                                    DEVUZ_BACKUP_FROM=<номер старой> devuz-backup restore …
+#
+# Куда:
+#   usb   — диск с меткой файловой системы DEVUZ-BACKUP (вставлен — копия
+#           идёт и на него; нет — пропускаем, без ошибки). Монтируется только
+#           на время копии, без исполнения файлов с него.
+#   cloud — S3-хранилище DevUz: /etc/devuz/backup/cloud.env (заводская
+#           настройка: BACKUP_S3=https://<хост>/<корзина>, BACKUP_S3_KEY_ID,
+#           BACKUP_S3_SECRET — свой ключ доступа у каждой коробки).
+# Что: базы PostgreSQL (каждая своим дампом), данные «Офиса», настройки
+# коробки /etc/devuz (в них ключи служб — копия зашифрована), сертификат
+# коробки (Caddy). Модели не копируем: они большие и скачиваются заново.
+# Хранится: 7 ежедневных, 4 еженедельных, 6 ежемесячных.
+set -euo pipefail
+# Осторожно с pipefail: «… | head» или «… | grep -q» обрывают левую сторону
+# (SIGPIPE), и весь конвейер считается ошибкой. Поэтому вывод сначала в
+# переменную, а проверка — отдельно.
+conf=/etc/devuz/backup
+state=/var/lib/devuz/backup
+stage=$state/stage
+mnt=/run/devuz/backup-usb
+status=$state/status.json
+label=DEVUZ-BACKUP
+export RESTIC_PASSWORD_FILE=$conf/password RESTIC_CACHE_DIR=$state/cache
+DATA=(/var/lib/devuz/office /etc/devuz /var/lib/devuz/caddy "$stage")
+
+# Номер коробки в именах хранилищ. Восстановить на новой коробке копии
+# старой: DEVUZ_BACKUP_FROM=<номер старой> (12 знаков, есть в «Состоянии»).
+box_id() {
+    if [ -n "${DEVUZ_BACKUP_FROM:-}" ]; then
+        [[ "$DEVUZ_BACKUP_FROM" =~ ^[0-9a-f]{12}$ ]] || { echo "DEVUZ_BACKUP_FROM: 12 знаков 0-9a-f" >&2; exit 2; }
+        echo "$DEVUZ_BACKUP_FROM"
+    else
+        head -c 12 /etc/machine-id
+    fi
+}
+say() { echo "DEVUZ-BACKUP $*"; logger -t devuz-backup -- "$*" 2>/dev/null || true; }
+
+ensure_key() {
+    mkdir -p "$conf" "$state"; chmod 700 "$conf" "$state"
+    if [ ! -s "$conf/password" ]; then
+        # 24 знака без похожих (0/O, 1/I/L), группами по 4 — чтобы переписать с листа.
+        local raw k
+        raw=$(set +o pipefail; tr -dc 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' </dev/urandom | head -c 24)
+        [ ${#raw} -eq 24 ] || { say "ERROR не удалось создать ключ копий"; return 1; }
+        k=$(printf '%s' "$raw" | sed 's/..../&-/g; s/-$//')
+        ( umask 077; printf '%s\n' "$k" >"$conf/password.new" ); mv "$conf/password.new" "$conf/password"
+        say "создан ключ копий"
+    fi
+    # Руководителю — в «Офис» (он видит свой каталог настроек только на чтение).
+    if [ -d /etc/devuz/office ] && ! cmp -s "$conf/password" /etc/devuz/office/backup-key; then
+        install -m 600 "$conf/password" /etc/devuz/office/backup-key
+    fi
+}
+
+# cloud.env читаем как данные: только три строки, адрес — https (http — только тестовый образ).
+cloud_env() {
+    [ -s "$conf/cloud.env" ] || return 1
+    local url="" id="" secret="" line k v
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        k=${line%%=*}; v=${line#*=}
+        case "$k" in
+            BACKUP_S3) url=$v ;; BACKUP_S3_KEY_ID) id=$v ;; BACKUP_S3_SECRET) secret=$v ;;
+            *) say "ERROR cloud.env: недопустимая строка «$k»"; return 2 ;;
+        esac
+    done <"$conf/cloud.env"
+    if [[ ! "$url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[a-z0-9][a-z0-9.-]{1,62}$ ]]; then
+        if [ -e /usr/lib/devuz/backup-allow-http ] && [[ "$url" =~ ^http://[A-Za-z0-9.-]+(:[0-9]+)?/[a-z0-9][a-z0-9.-]{1,62}$ ]]; then :; else
+            say "ERROR cloud.env: BACKUP_S3 должен быть https://<хост>/<корзина>"; return 2
+        fi
+    fi
+    [[ "$id" =~ ^[A-Za-z0-9_+/=-]{3,128}$ && "$secret" =~ ^[A-Za-z0-9_+/=-]{8,256}$ ]] || { say "ERROR cloud.env: ключ доступа пустой или с лишними знаками"; return 2; }
+    export AWS_ACCESS_KEY_ID=$id AWS_SECRET_ACCESS_KEY=$secret
+    export RESTIC_REPOSITORY="s3:$url/devuz-$(box_id)"
+}
+
+usb_mount() {
+    local dev=/dev/disk/by-label/$label
+    [ -e "$dev" ] || return 1
+    mkdir -p "$mnt"
+    mountpoint -q "$mnt" || mount -o nosuid,nodev,noexec "$dev" "$mnt"
+    export RESTIC_REPOSITORY="$mnt/devuz-$(box_id)"
+}
+usb_umount() { if mountpoint -q "$mnt"; then sync; umount "$mnt" || umount -l "$mnt"; fi; }
+
+# Открыть хранилище куда: $1 — usb|cloud. Нет такого места — 1.
+open_repo() {
+    case "$1" in
+        usb) usb_mount || return 1 ;;
+        cloud) cloud_env || return $? ;;
+        *) echo "куда: usb или cloud" >&2; return 2 ;;
+    esac
+}
+close_repo() { [ "$1" = usb ] && usb_umount; unset RESTIC_REPOSITORY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; return 0; }
+
+dump_dbs() {
+    rm -rf "$stage"; mkdir -p "$stage/postgres"; chmod 700 "$stage"
+    podman container exists devuz-postgres || { say "база не запущена — копия без базы"; return 0; }
+    local db
+    for db in $(podman exec -u postgres devuz-postgres psql -U postgres -tAc "select datname from pg_database where not datistemplate and datname <> 'postgres'"); do
+        [[ "$db" =~ ^[a-z_][a-z0-9_]*$ ]] || continue
+        podman exec -u postgres devuz-postgres pg_dump -U postgres -Fc -d "$db" >"$stage/postgres/$db.dump"
+    done
+}
+
+record() { # куда, итог, текст
+    local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    mkdir -p "$state"; touch "$status"
+    local tmp; tmp=$(mktemp "$state/.status.XXXX")
+    # Простой формат: строка на место; JSON собираем при выводе (jq в образе нет).
+    grep -v "^$1 " "$status" >"$tmp" 2>/dev/null || true
+    printf '%s %s %s %s\n' "$1" "$2" "$now" "$3" >>"$tmp"
+    mv "$tmp" "$status"
+}
+
+backup_to() {
+    local where=$1 rc=0
+    open_repo "$where" || { rc=$?; [ "$rc" = 1 ] && { record "$where" none "нет места: $([ "$where" = usb ] && echo "диск $label не вставлен" || echo "облако не настроено")"; return 0; }; record "$where" error "настройки"; return 1; }
+    # Сроки: облако недоступно или отвечает ошибками — restic сам повторяет
+    # запросы; без срока ночная копия висела бы часами. Не успели — «не удалась».
+    if ! timeout 120 restic cat config >/dev/null 2>&1; then
+        if timeout 120 restic init >"$state/last-$where.log" 2>&1; then
+            say "$where: новое хранилище копий"
+        else
+            local why; why=$(grep -v '^[[:space:]]*$' "$state/last-$where.log" 2>/dev/null | tail -n1 || true)
+            record "$where" error "хранилище недоступно: ${why:0:160}"
+            say "ERROR $where: хранилище недоступно"; close_repo "$where"; return 1
+        fi
+    fi
+    if timeout 3h restic backup --host "devuz-$(box_id)" --tag devuz --one-file-system "${DATA[@]}" >"$state/last-$where.log" 2>&1 &&
+       timeout 1h restic forget --host "devuz-$(box_id)" --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >>"$state/last-$where.log" 2>&1; then
+        local list n
+        list=$(restic snapshots --host "devuz-$(box_id)" --compact 2>/dev/null || true)
+        n=$(printf '%s\n' "$list" | grep -c '^[0-9a-f]\{8\} ' || true)
+        record "$where" ok "копий: $n"
+        say "$where: копия готова (копий: $n)"
+    else
+        local last; last=$(tail -n1 "$state/last-$where.log" 2>/dev/null || true)
+        record "$where" error "${last:0:200}"
+        say "ERROR $where: копия не удалась — $(tail -n1 "$state/last-$where.log")"; rc=1
+    fi
+    close_repo "$where"
+    return $rc
+}
+
+restore_from() {
+    local where=$1 snap=${2:-latest}
+    [[ "$snap" =~ ^(latest|[0-9a-f]{8,64})$ ]] || { echo "копия: latest или её номер" >&2; return 2; }
+    open_repo "$where" || { echo "нет места «$where»" >&2; return 1; }
+    local tmp=$state/restore; rm -rf "$tmp"; mkdir -p "$tmp"; chmod 700 "$tmp"
+    timeout 3h restic restore "$snap" --host "devuz-$(box_id)" --target "$tmp"
+    close_repo "$where"
+    say "восстанавливаю из копии ($where, $snap)"
+    systemctl stop devuz-svc-office.service 2>/dev/null || true
+    local d
+    # Настройки копий (облако, ключ) — свои у этой коробки: из копии не берём.
+    rm -rf "$tmp/etc/devuz/backup"
+    for d in /var/lib/devuz/office /etc/devuz /var/lib/devuz/caddy; do
+        [ -d "$tmp$d" ] || continue
+        mkdir -p "$d"
+        cp -a "$tmp$d/." "$d/"
+    done
+    if [ -d "$tmp$stage/postgres" ] && podman container exists devuz-postgres; then
+        local f db
+        for f in "$tmp$stage"/postgres/*.dump; do
+            [ -e "$f" ] || continue
+            db=$(basename "$f" .dump)
+            local have
+            have=$(podman exec -u postgres devuz-postgres psql -U postgres -tAc "select 1 from pg_database where datname='$db'")
+            if [ "$have" != 1 ]; then
+                podman exec -u postgres devuz-postgres createdb -U postgres -O "$db" "$db" 2>/dev/null ||
+                    podman exec -u postgres devuz-postgres createdb -U postgres "$db"
+            fi
+            podman exec -i -u postgres devuz-postgres pg_restore -U postgres --clean --if-exists --no-owner --role="$db" -d "$db" <"$f" ||
+                podman exec -i -u postgres devuz-postgres pg_restore -U postgres --clean --if-exists -d "$db" <"$f"
+        done
+    fi
+    rm -rf "$tmp"
+    [ -e /etc/devuz/office/enabled ] && systemctl start devuz-svc-office.service 2>/dev/null || true
+    say "данные восстановлены из копии ($where, $snap)"
+}
+
+case "${1:-status}" in
+    run)
+        ensure_key
+        dump_dbs
+        rc=0
+        backup_to usb || rc=1
+        backup_to cloud || rc=1
+        rm -rf "$stage"
+        exit $rc
+        ;;
+    status)
+        printf '{'
+        first=1
+        while read -r where res at text; do
+            [ "$first" = 1 ] || printf ','; first=0
+            printf '"%s":{"result":"%s","at":"%s","text":"%s"}' "$where" "$res" "$at" "$(printf '%s' "$text" | sed 's/[\\"]/\\&/g')"
+        done < <(cat "$status" 2>/dev/null || true)
+        printf '}\n'
+        ;;
+    snapshots) ensure_key; open_repo "${2:?usb или cloud}"; restic snapshots --host "devuz-$(box_id)"; close_repo "$2" ;;
+    restore) ensure_key; restore_from "${2:?usb или cloud}" "${3:-latest}" ;;
+    key-set)
+        k=$(set +o pipefail; tr -d '\r\n ' | head -c 100 | tr 'a-z' 'A-Z')
+        [[ "$k" =~ ^[A-Z0-9]{4}(-[A-Z0-9]{4}){5}$ ]] || { echo "ключ: 6 групп по 4 знака через дефис" >&2; exit 2; }
+        mkdir -p "$conf"; chmod 700 "$conf"
+        ( umask 077; printf '%s\n' "$k" >"$conf/password.new" ); mv "$conf/password.new" "$conf/password"
+        ensure_key; say "ключ копий заменён"
+        ;;
+    prepare-usb)
+        dev=${2:?устройство, например /dev/sdb}
+        [ "${3:-}" = --yes ] || { echo "всё на $dev будет стёрто; повторите с --yes" >&2; exit 2; }
+        [[ "$dev" =~ ^/dev/(sd[a-z]+|loop[0-9]+)$ ]] && [ -b "$dev" ] || { echo "$dev: нужен диск /dev/sdX" >&2; exit 2; }
+        # Системный диск и что-либо смонтированное не трогаем.
+        mounted=$(lsblk -nro MOUNTPOINT "$dev")
+        if [ -n "$(printf '%s' "$mounted" | tr -d '[:space:]')" ]; then echo "$dev смонтирован — не трогаю" >&2; exit 1; fi
+        usr_src=$(findmnt -nvo SOURCE /usr 2>/dev/null || true); usr_src=${usr_src%%$'\n'*}
+        root_disk=$(lsblk -nro PKNAME "$usr_src" 2>/dev/null || true); root_disk=${root_disk%%$'\n'*}
+        [ -n "$root_disk" ] && [ "/dev/$root_disk" = "$dev" ] && { echo "$dev — системный диск" >&2; exit 1; }
+        wipefs -a "$dev" >/dev/null
+        mkfs.ext4 -q -F -L "$label" -m 0 "$dev"
+        udevadm settle 2>/dev/null || true
+        say "диск $dev подготовлен для копий (метка $label)"
+        ;;
+    id) box_id ;;
+    *) echo "использование: devuz-backup run | status | snapshots usb|cloud | restore usb|cloud [копия] | key-set | id" >&2; exit 2 ;;
+esac

@@ -484,6 +484,34 @@ jobs:
             { echo "::error::коробка не вошла в Headscale"; rc=1; }
           exit $rc
 
+      - name: Тест копий данных (диск и облако, шифрование ключом клиента, восстановление)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # «Облако DevUz» — S3 на раннере: moto (эмулятор S3, версия закреплена),
+          # гость видит его как 10.0.2.2:8333. До загрузки коробки проверяем сами
+          # (корзина, запись, чтение): сбой подставного облака виден сразу.
+          python3 -m venv "$WORK/s3env"
+          "$WORK/s3env/bin/pip" install -q 'moto[server]==5.1.22'
+          "$WORK/s3env/bin/moto_server" -H 0.0.0.0 -p 8333 >"$WORK/s3.log" 2>&1 &
+          for i in $(seq 60); do curl -s -o /dev/null http://10.0.2.2:8333/ && break; sleep 1; done
+          id="ci$(openssl rand -hex 6)"; secret="$(openssl rand -hex 20)"
+          # moto принимает только подписанные запросы — проверяем тем же способом, что restic.
+          "$WORK/s3env/bin/python" tests/s3-probe.py http://10.0.2.2:8333 "$id" "$secret" ||
+            { echo "::error::подставное облако S3 не работает"; cat "$WORK/s3.log"; exit 1; }
+          echo "Подставное облако S3 работает: $("$WORK/s3env/bin/pip" show moto | grep ^Version)"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED="backup,http://10.0.2.2:8333/devuz-test,$id:$secret" EXPECT_VERSION="$DEVUZ_VERSION" LOG=backup.log
+          export TEST_TIMEOUT=900 TEST_TITLE="Тест копий данных"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in NOTHING_CONFIGURED TIMER BACKUP_OK USB_UNMOUNTED ENCRYPTED WRONG_KEY_REFUSED RESTORE_USB RESTORE_CLOUD CLOUD_ENV_STRICT; do
+            line=$(grep -m1 -o "DEVUZ-BACKUP-TEST $k .*" backup.log || true)
+            echo "- ${line:-❌ нет DEVUZ-BACKUP-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-BACKUP-TEST OK' backup.log || { echo "::error::тест копий не прошёл"; rc=1; tail -n 30 "$WORK/s3.log"; }
+          pkill -f moto_server || true
+          exit $rc
+
       - name: Тест «Ядра» (токены, права, учёт, очередь)
         if: env.SABOTAGE == 'none'
         run: |

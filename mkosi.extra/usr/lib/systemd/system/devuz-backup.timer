@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Копия каждую ночь в 03:10 по времени коробки (Ташкент) с разбросом до
+# 30 минут; коробка была выключена — копия при включении.
+[Unit]
+Description=DevUz: копия данных каждую ночь
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
