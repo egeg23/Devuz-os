@@ -482,6 +482,28 @@ jobs:
             { echo "::error::коробка не вошла в Headscale"; rc=1; }
           exit $rc
 
+      - name: Тест копий данных (диск и облако, шифрование ключом клиента, восстановление)
+        if: env.SABOTAGE == 'none'
+        run: |
+          # «Облако DevUz» — S3 на раннере (SeaweedFS 4.50 по отпечатку), гость видит его как 10.0.2.2:8333.
+          # Ключ доступа — на лету, никуда не сохраняется.
+          docker run -d --name devuz-s3 --security-opt apparmor=unconfined -p 8333:8333 \
+            chrislusf/seaweedfs@sha256:c2658820e763294a9e9de7b36c81e59b879e3459148351aee4e31a126ca64860 server -s3 -dir=/data
+          for i in $(seq 60); do curl -s -o /dev/null http://10.0.2.2:8333/ && break; sleep 1; done
+          id="ci$(openssl rand -hex 6)"; secret="$(openssl rand -hex 20)"
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED="backup,http://10.0.2.2:8333/devuz-test,$id:$secret" EXPECT_VERSION="$DEVUZ_VERSION" LOG=backup.log
+          export TEST_TIMEOUT=900 TEST_TITLE="Тест копий данных"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in NOTHING_CONFIGURED TIMER BACKUP_OK USB_UNMOUNTED ENCRYPTED WRONG_KEY_REFUSED RESTORE_USB RESTORE_CLOUD CLOUD_ENV_STRICT; do
+            line=$(grep -m1 -o "DEVUZ-BACKUP-TEST $k .*" backup.log || true)
+            echo "- ${line:-❌ нет DEVUZ-BACKUP-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-BACKUP-TEST OK' backup.log || { echo "::error::тест копий не прошёл"; rc=1; }
+          docker rm -f devuz-s3 >/dev/null
+          exit $rc
+
       - name: Тест «Ядра» (токены, права, учёт, очередь)
         if: env.SABOTAGE == 'none'
         run: |

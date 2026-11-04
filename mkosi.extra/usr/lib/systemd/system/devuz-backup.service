@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Копия данных коробки (devuz-backup run): диск DEVUZ-BACKUP и облако DevUz.
+# Не удалась — сигнал (devuz-alert), «Офис» покажет это в «Состоянии».
+[Unit]
+Description=DevUz: копия данных
+After=devuz-svc-postgres.service network-online.target
+Wants=network-online.target
+OnFailure=devuz-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/devuz-backup run
+# В фоне: интерфейс и база важнее.
+Slice=devuz-ai.slice
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=4h
