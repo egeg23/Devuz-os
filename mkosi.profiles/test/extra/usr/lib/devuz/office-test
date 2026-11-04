@@ -8,7 +8,8 @@
 #  3. ходит в «Ядро» по сокету со своим токеном (вход Anthropic);
 #  4. токен — 0600, в «Ядре» — только отпечаток с приоритетом live; код
 #     первого входа — 0600 и не в журнале;
-#  5. «Офис» остановлен — Caddy показывает страницу коробки.
+#  5. образ без подписи и подписанный чужим ключом — отказ по подписи;
+#  6. «Офис» остановлен — Caddy показывает страницу коробки.
 set -u
 say() { echo "DEVUZ-OFFICE-TEST $*"; }
 fail=0
@@ -45,6 +46,17 @@ if [ "$ok" = office ] && [ "$(stat -c %a /etc/devuz/office/db-password)" = 600 ]
 else
     say "ERROR база «Офиса»: «$ok» / «$bad» / «$other»"; fail=1
 fi
+# Образ без нашей подписи и подписанный чужим ключом коробка не берёт: отказ
+# должен быть именно из-за подписи (а не из-за сети), и образа после него нет.
+for t in unsigned foreign; do
+    out=$(podman pull "ghcr.io/egeg23/devuz-office:$t" 2>&1); prc=$?
+    k=$([ "$t" = unsigned ] && echo UNSIGNED_REFUSED || echo FOREIGN_KEY_REFUSED)
+    if [ "$prc" -ne 0 ] && printf '%s' "$out" | grep -qi 'signature' && ! podman image exists "ghcr.io/egeg23/devuz-office:$t"; then
+        say "$k ok: $(printf '%s' "$out" | grep -i -m1 'signature' | cut -c1-160)"
+    else
+        say "ERROR образ «$t» не отвергнут: код $prc, $(printf '%s' "$out" | tail -n1 | cut -c1-200)"; fail=1
+    fi
+done
 systemctl stop devuz-svc-office.service
 body=$(curl -s --cacert "$ca" https://localhost/)
 [ "$body" = "DevUz OK" ] && say "FALLBACK ok" || { say "ERROR без «Офиса»: «$body»"; fail=1; }
