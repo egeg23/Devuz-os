@@ -62,6 +62,16 @@ else
     say "DB_PEER_ONLY ok: root в контейнере не входит как postgres"
 fi
 if curl -s -m 3 -o /dev/null http://127.0.0.1:2019/config/; then say "ERROR API Caddy :2019 открыт"; fail=1; else say "CADDY_ADMIN_CLOSED ok"; fi
+# «Состояние коробки» для «Офиса»: таймер раз в минуту, версия и службы, без секретов.
+systemctl start devuz-status.service
+iv=$(. /usr/lib/os-release; echo "${IMAGE_VERSION:-}")
+st=$(cat /run/devuz/status/box.json 2>/dev/null)
+if systemctl is-enabled --quiet devuz-status.timer && [[ "$st" == *"\"version\":\"${iv}\""* && "$st" == *'"postgres":"active"'* && "$st" == *'"mem":{"total_mb":'* ]] &&
+   [ "$(stat -c %a /run/devuz/status/box.json)" = 644 ] && ! grep -qF "$(cat /etc/devuz/postgres/password 2>/dev/null || echo нет-пароля)" /run/devuz/status/box.json; then
+    say "STATUS_JSON ok: $(head -c 200 /run/devuz/status/box.json)"
+else
+    say "ERROR состояние коробки: «$(head -c 300 /run/devuz/status/box.json 2>&1)»"; fail=1
+fi
 h=$(hostname); [ "$h" = devuz ] && say "HOSTNAME ok: $h" || { say "ERROR имя коробки: $h"; fail=1; }
 systemctl is-enabled --quiet systemd-timesyncd.service && say "TIMESYNC_ENABLED ok ($(timedatectl show -p Timezone --value))" || { say "ERROR timesyncd не включён"; fail=1; }
 s=$(systemctl show -p Slice --value devuz-svc-postgres.service); [ "$s" = devuz-ui.slice ] && say "UI_SLICE ok" || { say "ERROR PostgreSQL в ломте «$s»"; fail=1; }

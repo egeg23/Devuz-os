@@ -411,7 +411,7 @@ jobs:
           export TEST_CRED=services EXPECT_VERSION="$DEVUZ_VERSION" LOG=services.log
           export TEST_TIMEOUT=900 TEST_TITLE="Тест служб"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED DB_PEER_ONLY CADDY_ADMIN_CLOSED HOSTNAME TIMESYNC_ENABLED UI_SLICE JOURNAL_PERSISTENT; do
+          for k in IMAGES_FROM_USR POSTGRES_QUERY CADDY_HTTPS FIRST_BOOT DATA_SURVIVED IMAGE_TAMPER_RESTORED DB_PEER_ONLY CADDY_ADMIN_CLOSED HOSTNAME TIMESYNC_ENABLED UI_SLICE JOURNAL_PERSISTENT STATUS_JSON; do
             line=$(grep -m1 -o "DEVUZ-SERVICES $k.*" services.log || true)
             echo "- ${line:-❌ нет DEVUZ-SERVICES $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
@@ -523,7 +523,7 @@ jobs:
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=office EXPECT_VERSION="$DEVUZ_VERSION" LOG=office.log TEST_TITLE="Тест «Офиса»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK UNSIGNED_REFUSED FOREIGN_KEY_REFUSED; do
+          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK UNSIGNED_REFUSED FOREIGN_KEY_REFUSED STATUS_TO_OFFICE; do
             line=$(grep -m1 -o "DEVUZ-OFFICE-TEST $k .*" office.log || true)
             echo "- ${line:-❌ нет DEVUZ-OFFICE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
