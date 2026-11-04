@@ -485,11 +485,17 @@ jobs:
       - name: Тест копий данных (диск и облако, шифрование ключом клиента, восстановление)
         if: env.SABOTAGE == 'none'
         run: |
-          # «Облако DevUz» — S3 на раннере (SeaweedFS 4.50 по отпечатку), гость видит его как 10.0.2.2:8333.
-          # Ключ доступа — на лету, никуда не сохраняется.
-          docker run -d --name devuz-s3 --security-opt apparmor=unconfined -p 8333:8333 \
-            chrislusf/seaweedfs@sha256:c2658820e763294a9e9de7b36c81e59b879e3459148351aee4e31a126ca64860 server -s3 -dir=/data
+          # «Облако DevUz» — S3 на раннере: moto (эмулятор S3, версия закреплена),
+          # гость видит его как 10.0.2.2:8333. До загрузки коробки проверяем сами
+          # (корзина, запись, чтение): сбой подставного облака виден сразу.
+          python3 -m venv "$WORK/s3env"
+          "$WORK/s3env/bin/pip" install -q 'moto[server]==5.1.22'
+          "$WORK/s3env/bin/moto_server" -H 0.0.0.0 -p 8333 >"$WORK/s3.log" 2>&1 &
           for i in $(seq 60); do curl -s -o /dev/null http://10.0.2.2:8333/ && break; sleep 1; done
+          curl -fsS -X PUT http://10.0.2.2:8333/devuz-probe >/dev/null
+          echo probe | curl -fsS -X PUT --data-binary @- http://10.0.2.2:8333/devuz-probe/probe.txt >/dev/null
+          [ "$(curl -fsS http://10.0.2.2:8333/devuz-probe/probe.txt)" = probe ] || { echo "::error::подставное облако S3 не работает"; cat "$WORK/s3.log"; exit 1; }
+          echo "Подставное облако S3 работает: $("$WORK/s3env/bin/pip" show moto | grep ^Version)"
           id="ci$(openssl rand -hex 6)"; secret="$(openssl rand -hex 20)"
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED="backup,http://10.0.2.2:8333/devuz-test,$id:$secret" EXPECT_VERSION="$DEVUZ_VERSION" LOG=backup.log
@@ -500,8 +506,8 @@ jobs:
             echo "- ${line:-❌ нет DEVUZ-BACKUP-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
           done
-          grep -q 'DEVUZ-BACKUP-TEST OK' backup.log || { echo "::error::тест копий не прошёл"; rc=1; }
-          docker rm -f devuz-s3 >/dev/null
+          grep -q 'DEVUZ-BACKUP-TEST OK' backup.log || { echo "::error::тест копий не прошёл"; rc=1; tail -n 30 "$WORK/s3.log"; }
+          pkill -f moto_server || true
           exit $rc
 
       - name: Тест «Ядра» (токены, права, учёт, очередь)

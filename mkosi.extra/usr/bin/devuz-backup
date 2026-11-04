@@ -136,11 +136,19 @@ record() { # куда, итог, текст
 backup_to() {
     local where=$1 rc=0
     open_repo "$where" || { rc=$?; [ "$rc" = 1 ] && { record "$where" none "нет места: $([ "$where" = usb ] && echo "диск $label не вставлен" || echo "облако не настроено")"; return 0; }; record "$where" error "настройки"; return 1; }
-    if ! restic cat config >/dev/null 2>&1; then
-        restic init >/dev/null && say "$where: новое хранилище копий"
+    # Сроки: облако недоступно или отвечает ошибками — restic сам повторяет
+    # запросы; без срока ночная копия висела бы часами. Не успели — «не удалась».
+    if ! timeout 120 restic cat config >/dev/null 2>&1; then
+        if timeout 120 restic init >"$state/last-$where.log" 2>&1; then
+            say "$where: новое хранилище копий"
+        else
+            local why; why=$(grep -v '^[[:space:]]*$' "$state/last-$where.log" 2>/dev/null | tail -n1 || true)
+            record "$where" error "хранилище недоступно: ${why:0:160}"
+            say "ERROR $where: хранилище недоступно"; close_repo "$where"; return 1
+        fi
     fi
-    if restic backup --host "devuz-$(box_id)" --tag devuz --one-file-system "${DATA[@]}" >"$state/last-$where.log" 2>&1 &&
-       restic forget --host "devuz-$(box_id)" --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >>"$state/last-$where.log" 2>&1; then
+    if timeout 3h restic backup --host "devuz-$(box_id)" --tag devuz --one-file-system "${DATA[@]}" >"$state/last-$where.log" 2>&1 &&
+       timeout 1h restic forget --host "devuz-$(box_id)" --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >>"$state/last-$where.log" 2>&1; then
         local list n
         list=$(restic snapshots --host "devuz-$(box_id)" --compact 2>/dev/null || true)
         n=$(printf '%s\n' "$list" | grep -c '^[0-9a-f]\{8\} ' || true)
@@ -160,7 +168,7 @@ restore_from() {
     [[ "$snap" =~ ^(latest|[0-9a-f]{8,64})$ ]] || { echo "копия: latest или её номер" >&2; return 2; }
     open_repo "$where" || { echo "нет места «$where»" >&2; return 1; }
     local tmp=$state/restore; rm -rf "$tmp"; mkdir -p "$tmp"; chmod 700 "$tmp"
-    restic restore "$snap" --host "devuz-$(box_id)" --target "$tmp"
+    timeout 3h restic restore "$snap" --host "devuz-$(box_id)" --target "$tmp"
     close_repo "$where"
     say "восстанавливаю из копии ($where, $snap)"
     systemctl stop devuz-svc-office.service 2>/dev/null || true
