@@ -31,6 +31,9 @@
 # коробки (Caddy). Модели не копируем: они большие и скачиваются заново.
 # Хранится: 7 ежедневных, 4 еженедельных, 6 ежемесячных.
 set -euo pipefail
+# Осторожно с pipefail: «… | head» или «… | grep -q» обрывают левую сторону
+# (SIGPIPE), и весь конвейер считается ошибкой. Поэтому вывод сначала в
+# переменную, а проверка — отдельно.
 conf=/etc/devuz/backup
 state=/var/lib/devuz/backup
 stage=$state/stage
@@ -56,7 +59,10 @@ ensure_key() {
     mkdir -p "$conf" "$state"; chmod 700 "$conf" "$state"
     if [ ! -s "$conf/password" ]; then
         # 24 знака без похожих (0/O, 1/I/L), группами по 4 — чтобы переписать с листа.
-        local k; k=$(tr -dc 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' </dev/urandom | head -c 24 | sed 's/..../&-/g; s/-$//')
+        local raw k
+        raw=$(set +o pipefail; tr -dc 'ABCDEFGHJKMNPQRSTUVWXYZ23456789' </dev/urandom | head -c 24)
+        [ ${#raw} -eq 24 ] || { say "ERROR не удалось создать ключ копий"; return 1; }
+        k=$(printf '%s' "$raw" | sed 's/..../&-/g; s/-$//')
         ( umask 077; printf '%s\n' "$k" >"$conf/password.new" ); mv "$conf/password.new" "$conf/password"
         say "создан ключ копий"
     fi
@@ -135,11 +141,14 @@ backup_to() {
     fi
     if restic backup --host "devuz-$(box_id)" --tag devuz --one-file-system "${DATA[@]}" >"$state/last-$where.log" 2>&1 &&
        restic forget --host "devuz-$(box_id)" --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >>"$state/last-$where.log" 2>&1; then
-        local n; n=$(restic snapshots --host "devuz-$(box_id)" --compact 2>/dev/null | grep -c '^[0-9a-f]\{8\} ' || true)
+        local list n
+        list=$(restic snapshots --host "devuz-$(box_id)" --compact 2>/dev/null || true)
+        n=$(printf '%s\n' "$list" | grep -c '^[0-9a-f]\{8\} ' || true)
         record "$where" ok "копий: $n"
         say "$where: копия готова (копий: $n)"
     else
-        record "$where" error "$(tail -n1 "$state/last-$where.log" | tr -d '\n' | cut -c1-200)"
+        local last; last=$(tail -n1 "$state/last-$where.log" 2>/dev/null || true)
+        record "$where" error "${last:0:200}"
         say "ERROR $where: копия не удалась — $(tail -n1 "$state/last-$where.log")"; rc=1
     fi
     close_repo "$where"
@@ -168,9 +177,12 @@ restore_from() {
         for f in "$tmp$stage"/postgres/*.dump; do
             [ -e "$f" ] || continue
             db=$(basename "$f" .dump)
-            podman exec -u postgres devuz-postgres psql -U postgres -tAc "select 1 from pg_database where datname='$db'" | grep -q 1 ||
+            local have
+            have=$(podman exec -u postgres devuz-postgres psql -U postgres -tAc "select 1 from pg_database where datname='$db'")
+            if [ "$have" != 1 ]; then
                 podman exec -u postgres devuz-postgres createdb -U postgres -O "$db" "$db" 2>/dev/null ||
-                podman exec -u postgres devuz-postgres createdb -U postgres "$db"
+                    podman exec -u postgres devuz-postgres createdb -U postgres "$db"
+            fi
             podman exec -i -u postgres devuz-postgres pg_restore -U postgres --clean --if-exists --no-owner --role="$db" -d "$db" <"$f" ||
                 podman exec -i -u postgres devuz-postgres pg_restore -U postgres --clean --if-exists -d "$db" <"$f"
         done
@@ -196,13 +208,13 @@ case "${1:-status}" in
         while read -r where res at text; do
             [ "$first" = 1 ] || printf ','; first=0
             printf '"%s":{"result":"%s","at":"%s","text":"%s"}' "$where" "$res" "$at" "$(printf '%s' "$text" | sed 's/[\\"]/\\&/g')"
-        done <"$status" 2>/dev/null || true
+        done < <(cat "$status" 2>/dev/null || true)
         printf '}\n'
         ;;
     snapshots) ensure_key; open_repo "${2:?usb или cloud}"; restic snapshots --host "devuz-$(box_id)"; close_repo "$2" ;;
     restore) ensure_key; restore_from "${2:?usb или cloud}" "${3:-latest}" ;;
     key-set)
-        k=$(tr -d '\r\n ' | head -c 100 | tr 'a-z' 'A-Z')
+        k=$(set +o pipefail; tr -d '\r\n ' | head -c 100 | tr 'a-z' 'A-Z')
         [[ "$k" =~ ^[A-Z0-9]{4}(-[A-Z0-9]{4}){5}$ ]] || { echo "ключ: 6 групп по 4 знака через дефис" >&2; exit 2; }
         mkdir -p "$conf"; chmod 700 "$conf"
         ( umask 077; printf '%s\n' "$k" >"$conf/password.new" ); mv "$conf/password.new" "$conf/password"
@@ -213,8 +225,10 @@ case "${1:-status}" in
         [ "${3:-}" = --yes ] || { echo "всё на $dev будет стёрто; повторите с --yes" >&2; exit 2; }
         [[ "$dev" =~ ^/dev/(sd[a-z]+|loop[0-9]+)$ ]] && [ -b "$dev" ] || { echo "$dev: нужен диск /dev/sdX" >&2; exit 2; }
         # Системный диск и что-либо смонтированное не трогаем.
-        if lsblk -nro MOUNTPOINT "$dev" | grep -q .; then echo "$dev смонтирован — не трогаю" >&2; exit 1; fi
-        root_disk=$(lsblk -nro PKNAME "$(findmnt -nvo SOURCE /usr 2>/dev/null | head -n1)" 2>/dev/null | head -n1 || true)
+        mounted=$(lsblk -nro MOUNTPOINT "$dev")
+        if [ -n "$(printf '%s' "$mounted" | tr -d '[:space:]')" ]; then echo "$dev смонтирован — не трогаю" >&2; exit 1; fi
+        usr_src=$(findmnt -nvo SOURCE /usr 2>/dev/null || true); usr_src=${usr_src%%$'\n'*}
+        root_disk=$(lsblk -nro PKNAME "$usr_src" 2>/dev/null || true); root_disk=${root_disk%%$'\n'*}
         [ -n "$root_disk" ] && [ "/dev/$root_disk" = "$dev" ] && { echo "$dev — системный диск" >&2; exit 1; }
         wipefs -a "$dev" >/dev/null
         mkfs.ext4 -q -F -L "$label" -m 0 "$dev"
