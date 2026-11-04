@@ -494,11 +494,11 @@ jobs:
           "$WORK/s3env/bin/pip" install -q 'moto[server]==5.1.22'
           "$WORK/s3env/bin/moto_server" -H 0.0.0.0 -p 8333 >"$WORK/s3.log" 2>&1 &
           for i in $(seq 60); do curl -s -o /dev/null http://10.0.2.2:8333/ && break; sleep 1; done
-          curl -fsS -X PUT http://10.0.2.2:8333/devuz-probe >/dev/null
-          echo probe | curl -fsS -X PUT --data-binary @- http://10.0.2.2:8333/devuz-probe/probe.txt >/dev/null
-          [ "$(curl -fsS http://10.0.2.2:8333/devuz-probe/probe.txt)" = probe ] || { echo "::error::подставное облако S3 не работает"; cat "$WORK/s3.log"; exit 1; }
-          echo "Подставное облако S3 работает: $("$WORK/s3env/bin/pip" show moto | grep ^Version)"
           id="ci$(openssl rand -hex 6)"; secret="$(openssl rand -hex 20)"
+          # moto принимает только подписанные запросы — проверяем тем же способом, что restic.
+          "$WORK/s3env/bin/python" tests/s3-probe.py http://10.0.2.2:8333 "$id" "$secret" ||
+            { echo "::error::подставное облако S3 не работает"; cat "$WORK/s3.log"; exit 1; }
+          echo "Подставное облако S3 работает: $("$WORK/s3env/bin/pip" show moto | grep ^Version)"
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED="backup,http://10.0.2.2:8333/devuz-test,$id:$secret" EXPECT_VERSION="$DEVUZ_VERSION" LOG=backup.log
           export TEST_TIMEOUT=900 TEST_TITLE="Тест копий данных"
