@@ -1,0 +1,100 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Выход коробки наружу (туннель Cloudflare): вкл / выкл.
+#   devuz-tunnel on https://<адрес>  — включить; ключ туннеля читается из
+#       stdin (не из аргументов: не попадёт в историю и список процессов).
+#       Без stdin — берётся сохранённый. Адрес — тот, что настроен в
+#       Cloudflare для этого туннеля; его «Офис» показывает как адрес коробки
+#       снаружи (для Meta, виджета сайта, телефонов).
+#   devuz-tunnel off     — выключить (ключ остаётся на коробке);
+#   devuz-tunnel forget  — выключить и стереть ключ и адрес;
+#   devuz-tunnel status  — on / off / on-failed.
+# Служебное: prepare (собрать окружение контейнера), event <текст>.
+set -eu
+mark=/var/lib/devuz/tunnel-on
+dir=/etc/devuz/tunnel
+run=/run/devuz/tunnel
+log=/var/lib/devuz/tunnel.log
+unit=devuz-svc-cloudflared.service
+office_url=/etc/devuz/office/public-url
+
+note() {
+    mkdir -p /var/lib/devuz
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $1" >>"$log"
+    logger -t devuz-tunnel -p auth.notice -- "$1" 2>/dev/null || true
+    echo "DEVUZ-TUNNEL $1"
+}
+
+# Ключ туннеля Cloudflare — base64 от {"a":"<счёт>","t":"<uuid>","s":"<секрет>"}.
+# Проверяем форму, а не верим на слово: в окружение контейнера уходит только он.
+check_token() {
+    local t=$1 j
+    [[ "$t" =~ ^[A-Za-z0-9+/=_-]{60,600}$ ]] || { echo "ключ туннеля: не та форма" >&2; return 1; }
+    j=$(printf '%s' "$t" | tr '_-' '/+' | base64 -d 2>/dev/null) || { echo "ключ туннеля: не base64" >&2; return 1; }
+    [[ "$j" =~ \"a\":\"[0-9a-f]{32}\" ]] && [[ "$j" =~ \"t\":\"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\" ]] &&
+        [[ "$j" =~ \"s\":\"[A-Za-z0-9+/=]{32,}\" ]] || { echo "ключ туннеля: нет счёта, номера туннеля или секрета" >&2; return 1; }
+}
+
+check_url() {
+    [[ "$1" =~ ^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] ||
+        { echo "адрес: https://<имя>.<домен> без пути, сейчас «$1»" >&2; return 1; }
+}
+
+prepare() {
+    [ -s "$dir/token" ] || { echo "нет ключа туннеля $dir/token" >&2; return 1; }
+    local t; t=$(tr -d '\n\r ' <"$dir/token")
+    check_token "$t"
+    mkdir -p "$run"; chmod 700 "$run"
+    ( umask 077; printf 'TUNNEL_TOKEN=%s\n' "$t" >"$run/tunnel.env.new" )
+    mv "$run/tunnel.env.new" "$run/tunnel.env"
+}
+
+case "${1:-status}" in
+    on)
+        url=${2:-$(cat "$dir/url" 2>/dev/null || true)}
+        check_url "$url"
+        mkdir -p "$dir"; chmod 700 "$dir"
+        if [ ! -t 0 ]; then
+            t=$(tr -d '\n\r ' | head -c 1000)
+            if [ -n "$t" ]; then
+                check_token "$t"
+                ( umask 077; printf '%s\n' "$t" >"$dir/token.new" ); mv "$dir/token.new" "$dir/token"
+            fi
+        fi
+        [ -s "$dir/token" ] || { echo "нет ключа туннеля: передайте его на stdin" >&2; exit 1; }
+        printf '%s\n' "$url" >"$dir/url"
+        # Адрес снаружи — «Офису» (его каталог настроек он видит только на чтение).
+        mkdir -p /etc/devuz/office; printf '%s\n' "$url" >"$office_url"; chmod 644 "$office_url"
+        mkdir -p /var/lib/devuz && touch "$mark"
+        note "выход наружу: включаю ($url)"
+        systemctl reset-failed "$unit" 2>/dev/null || true
+        if ! systemctl start "$unit"; then
+            rm -f "$mark"; note "выход наружу: НЕ включился, метка снята"; exit 1
+        fi
+        note "выход наружу включён"
+        ;;
+    off)
+        note "выход наружу: выключаю"
+        rm -f "$mark"
+        systemctl stop "$unit"
+        # Выключили сами — прошлые сбои (не было связи, неверный ключ) больше не сбой.
+        systemctl reset-failed "$unit" 2>/dev/null || true
+        rm -f "$run/tunnel.env"
+        note "выход наружу выключен"
+        ;;
+    forget)
+        "$0" off
+        rm -f "$dir/token" "$dir/url" "$office_url"
+        note "ключ туннеля и адрес стёрты"
+        ;;
+    status)
+        if [ -e "$mark" ]; then
+            if systemctl is-active --quiet "$unit"; then echo on; else echo on-failed; fi
+        else
+            echo off
+        fi
+        ;;
+    prepare) prepare ;;
+    event) note "${2:?текст}" ;;
+    *) echo "использование: devuz-tunnel on https://<адрес> | off | forget | status" >&2; exit 2 ;;
+esac

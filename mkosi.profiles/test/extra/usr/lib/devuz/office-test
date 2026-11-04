@@ -9,7 +9,11 @@
 #  4. токен — 0600, в «Ядре» — только отпечаток с приоритетом live; код
 #     первого входа — 0600 и не в журнале;
 #  5. образ без подписи и подписанный чужим ключом — отказ по подписи;
-#  6. «Офис» остановлен — Caddy показывает страницу коробки.
+#  6. выход наружу: внешний вход Caddy только на 127.0.0.1, пометка
+#     «снаружи» не подделывается ни снаружи, ни из сети офиса; туннель
+#     выключен по умолчанию, включается только с ключом правильной формы,
+#     ключ 0600, адрес снаружи — «Офису»;
+#  7. «Офис» остановлен — Caddy показывает страницу коробки.
 set -u
 say() { echo "DEVUZ-OFFICE-TEST $*"; }
 fail=0
@@ -63,6 +67,64 @@ for t in unsigned foreign; do
         say "ERROR образ «$t» не отвергнут: код $prc, $(printf '%s' "$out" | tail -n1 | cut -c1-200)"; fail=1
     fi
 done
+# --- выход наружу ---
+if ss -Hltn 'sport = :8180' | awk '{print $4}' | grep -qvx '127.0.0.1:8180'; then
+    say "ERROR внешний вход слушает не только 127.0.0.1: $(ss -Hltn 'sport = :8180')"; fail=1
+elif ss -Hltn 'sport = :8180' | grep -q .; then
+    say "EXTERNAL_LOCAL_ONLY ok: $(ss -Hltn 'sport = :8180' | awk '{print $4}' | xargs)"
+else
+    say "ERROR внешнего входа :8180 нет"; fail=1
+fi
+# Через туннель приходит внешнее имя коробки — внешний вход принимает любое имя.
+out=$(curl -s -H 'Host: box-test.devuz.example' -H 'X-Devuz-Via: inside' -H 'Cf-Connecting-IP: 203.0.113.7' http://127.0.0.1:8180/api/via)
+inn=$(curl -s --cacert "$ca" -H 'X-Devuz-Via: tunnel' https://localhost/api/via)
+if [[ "$out" == *'"via":"tunnel"'* && "$out" == *'"ip":"203.0.113.7"'* && "$inn" == *'"via":""'* ]]; then
+    say "VIA_MARK ok: снаружи $out, из офиса $inn"
+else
+    say "ERROR пометка «снаружи»: снаружи «$out», из офиса «$inn»"; fail=1
+fi
+tun=devuz-svc-cloudflared.service
+if [ "$(devuz-tunnel status)" = off ] && ! systemctl is-active --quiet "$tun" && podman image exists ghcr.io/egeg23/devuz-cloudflared:2026.10.1; then
+    say "TUNNEL_OFF_BY_DEFAULT ok (образ в /usr)"
+else
+    say "ERROR туннель: $(devuz-tunnel status), образ: $(podman image exists ghcr.io/egeg23/devuz-cloudflared:2026.10.1 && echo есть || echo нет)"; fail=1
+fi
+if printf 'not-a-token' | devuz-tunnel on https://box-test.devuz.example 2>/tmp/tun.err; then
+    say "ERROR туннель включился с плохим ключом"; fail=1
+elif printf '%s' "$(printf '{"a":"%032d","t":"x","s":"y"}' 0 | base64 -w0)" | devuz-tunnel on https://box-test.devuz.example 2>>/tmp/tun.err; then
+    say "ERROR туннель включился с ключом без номера туннеля"; fail=1
+elif printf 'x' | devuz-tunnel on http://box-test.devuz.example 2>>/tmp/tun.err; then
+    say "ERROR туннель включился с адресом http"; fail=1
+elif [ "$(devuz-tunnel status)" = off ]; then
+    say "TUNNEL_BAD_REFUSED ok: $(head -n1 /tmp/tun.err)"
+else
+    say "ERROR после отказа туннель: $(devuz-tunnel status)"; fail=1
+fi
+# Ключ правильной формы (не настоящий): cloudflared стартует с нашим номером
+# туннеля и стучится в Cloudflare (войти он не сможет — ключ выдуман).
+tid=0b6f1a2c-3d4e-4f50-8a9b-0c1d2e3f4a5b
+tok=$(printf '{"a":"%032d","t":"%s","s":"%s"}' 0 "$tid" "$(head -c 32 /dev/urandom | base64 -w0)" | base64 -w0)
+# Ключ ищем в командных строках процессов через файл-образец: в аргументах самого grep его нет.
+( umask 077; printf '%s\n' "$tok" >/run/tok.pat )
+if printf '%s\n' "$tok" | devuz-tunnel on https://box-test.devuz.example; then
+    for i in $(seq 30); do journalctl -b -u "$tun" --no-pager | grep -q "$tid" && break; sleep 2; done
+    if journalctl -b -u "$tun" --no-pager | grep -q "$tid" && [ "$(stat -c %a /etc/devuz/tunnel/token)" = 600 ] &&
+       [ "$(cat /etc/devuz/office/public-url)" = https://box-test.devuz.example ] && ! grep -qaF -f /run/tok.pat /proc/[0-9]*/cmdline 2>/dev/null; then
+        say "TUNNEL_STARTS ok: cloudflared с туннелем $tid, ключ 0600 и не в списке процессов, адрес — «Офису»"
+    else
+        say "ERROR туннель: права $(stat -c %a /etc/devuz/tunnel/token), адрес «$(cat /etc/devuz/office/public-url 2>&1)»"; journalctl -b -u "$tun" --no-pager -n 30; fail=1
+    fi
+else
+    say "ERROR devuz-tunnel on не удалось"; journalctl -b -u "$tun" --no-pager -n 30; fail=1
+fi
+rm -f /run/tok.pat
+devuz-tunnel off
+if ! systemctl is-active --quiet "$tun" && ! systemctl is-failed --quiet "$tun" && [ "$(devuz-tunnel status)" = off ] && grep -q 'выход наружу включён' /var/lib/devuz/tunnel.log; then
+    say "TUNNEL_OFF ok"
+else
+    say "ERROR после выключения туннель: $(devuz-tunnel status)"; fail=1
+fi
+
 systemctl stop devuz-svc-office.service
 body=$(curl -s --cacert "$ca" https://localhost/)
 [ "$body" = "DevUz OK" ] && say "FALLBACK ok" || { say "ERROR без «Офиса»: «$body»"; fail=1; }
