@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# «Состояние коробки» для «Офиса» (/run/devuz/status/box.json).
+[Unit]
+Description=DevUz: состояние коробки для «Офиса»
+After=devuz-box-class.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/status-json
+Nice=10

@@ -25,6 +25,12 @@ if systemctl start devuz-svc-office.service && systemctl is-active --quiet devuz
 else
     say "ERROR «Офис» не запустился:"; journalctl -b -u devuz-svc-office.service --no-pager -n 40; fail=1
 fi
+systemctl start devuz-status.service
+if podman exec devuz-office cat /run/devuz/status/box.json | grep -q '"office":"active"' && ! podman exec devuz-office touch /run/devuz/status/x 2>/dev/null; then
+    say "STATUS_TO_OFFICE ok: «Офис» видит состояние коробки, только чтение"
+else
+    say "ERROR «Офис» не видит состояние коробки"; fail=1
+fi
 body=$(curl -s --cacert "$ca" https://localhost/)
 case "$body" in *"Офис"*"данные пишутся: да"*) say "VIA_CADDY ok: $body" ;; *) say "ERROR через Caddy: «$body»"; fail=1 ;; esac
 c=$(curl -s -o /tmp/office.ai -w '%{http_code}' --cacert "$ca" https://localhost/api/ai)
