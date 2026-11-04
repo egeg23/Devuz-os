@@ -496,7 +496,7 @@ jobs:
           grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
           exit $rc
 
-      - name: Тест места под «Офис» (подписанный образ, Caddy, токен «Ядра»)
+      - name: Тест места под «Офис» (подписанный образ, чужой и без подписи — отказ, Caddy, токен «Ядра»)
         if: env.SABOTAGE == 'none'
         run: |
           # Заглушка «Офиса» (настоящий — в закрытом репозитории): собираем,
@@ -509,10 +509,21 @@ jobs:
           d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:v1")
           COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
             --allow-insecure-registry --sign-container-identity ghcr.io/egeg23/devuz-office "$reg@$d"
+          # Рядом — два образа, которые коробка обязана отвергнуть: без подписи и
+          # подписанный чужим ключом (другое содержимое — метка, чтобы не взялся из кэша).
+          for t in unsigned foreign; do
+            docker build -q -t "localhost:5000/devuz-office:$t" --label "devuz.test=$t" -f tests/office-stub/Containerfile tests/office-stub
+            docker push -q "localhost:5000/devuz-office:$t"
+          done
+          mkdir -p "$WORK/cosign-foreign"
+          (cd "$WORK/cosign-foreign" && COSIGN_PASSWORD= cosign generate-key-pair)
+          d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://$reg:foreign")
+          COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign-foreign/cosign.key" --tlog-upload=false \
+            --allow-insecure-registry --sign-container-identity ghcr.io/egeg23/devuz-office "$reg@$d"
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=office EXPECT_VERSION="$DEVUZ_VERSION" LOG=office.log TEST_TITLE="Тест «Офиса»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK; do
+          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK UNSIGNED_REFUSED FOREIGN_KEY_REFUSED; do
             line=$(grep -m1 -o "DEVUZ-OFFICE-TEST $k .*" office.log || true)
             echo "- ${line:-❌ нет DEVUZ-OFFICE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
