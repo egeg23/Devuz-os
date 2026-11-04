@@ -19,6 +19,11 @@ function core(text) {
 }
 http.createServer(async (req, res) => {
   if (req.url === "/api/health") { res.writeHead(200); return res.end("ok"); }
+  // Что пришло от Caddy: пометка «снаружи» и адрес посетителя (тест выхода наружу).
+  if (req.url === "/api/via") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ via: req.headers["x-devuz-via"] || "", ip: req.headers["x-forwarded-for"] || "" }));
+  }
   if (req.url.startsWith("/api/ai")) {
     const r = await core("привет из Офиса");
     res.writeHead(r.status === 200 ? 200 : 502, { "content-type": "application/json" });

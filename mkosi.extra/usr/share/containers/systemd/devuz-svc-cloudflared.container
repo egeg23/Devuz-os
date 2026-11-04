@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Выход коробки наружу: туннель Cloudflare (решение владельца 04.11 — сейчас
+# Cloudflare, позже свой сервер DevUz). Коробка сама держит исходящее
+# соединение с Cloudflare: открывать порты в роутере офиса не нужно.
+# Нужен «Офису»: события Meta и VK, чат на сайте, телефоны сотрудников.
+#
+# По умолчанию ВЫКЛЮЧЕН: включает devuz-tunnel on (метка
+# /var/lib/devuz/tunnel-on). Ключ туннеля — /etc/devuz/tunnel/token (0600),
+# в контейнер попадает через /run (devuz-tunnel prepare), не из командной
+# строки. Туннель ведёт только на 127.0.0.1:8180 — внешний вход Caddy
+# (Caddyfile): там помечается, что запрос пришёл снаружи, а что пускать
+# дальше, решает «Офис». Внутрь сети офиса туннель не ведёт.
+# Шифрование: до Cloudflare и от Cloudflare до коробки — TLS, но на стороне
+# Cloudflare трафик расшифровывается (поэтому позже — свой сервер).
+[Unit]
+Wants=devuz-images.service devuz-svc-caddy.service
+After=devuz-images.service devuz-svc-caddy.service network-online.target
+Description=DevUz: выход наружу (туннель Cloudflare)
+ConditionPathExists=/var/lib/devuz/tunnel-on
+ConditionPathExists=/etc/devuz/tunnel/token
+
+[Container]
+ContainerName=devuz-cloudflared
+Image=ghcr.io/egeg23/devuz-cloudflared:2026.10.1
+# Образ лежит в /usr (devuz-images.service); из сети не тянем.
+Pull=never
+Network=host
+EnvironmentFile=/run/devuz/tunnel/tunnel.env
+# Точка входа образа — cloudflared --no-autoupdate (сам себя не обновляет:
+# версия меняется только с обновлением ОС). Метрики — только на 127.0.0.1.
+Exec=tunnel --metrics 127.0.0.1:20241 run
+DropCapability=all
+NoNewPrivileges=true
+ReadOnly=true
+
+[Service]
+ExecStartPre=/usr/bin/devuz-tunnel prepare
+ExecStartPost=/usr/bin/devuz-tunnel event "туннель запущен"
+ExecStopPost=/usr/bin/devuz-tunnel event "туннель остановлен"
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
