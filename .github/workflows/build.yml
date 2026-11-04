@@ -138,10 +138,12 @@ jobs:
           # Источники — по точному отпечатку (digest), а не по тегу: что
           # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
           # отпечатком (теги в именах справа: postgres 17, caddy 2,
-          # tailscale v1.84.3, node 22-bookworm-slim, llama.cpp server-b12030 — CPU).
+          # tailscale v1.84.3, cloudflared 2026.10.1, node 22-bookworm-slim,
+          # llama.cpp server-b12030 — CPU).
           for pair in "mirror.gcr.io/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1 devuz-postgres:17" \
                       "mirror.gcr.io/library/caddy@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e devuz-caddy:2" \
                       "ghcr.io/tailscale/tailscale@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e devuz-tailscale:v1.84.3" \
+                      "docker.io/cloudflare/cloudflared@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5 devuz-cloudflared:2026.10.1" \
                       "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22" \
                       "ghcr.io/ggml-org/llama.cpp@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b devuz-llama:server"; do
             set -- $pair; src=$1; img=$2; repo=${img%%:*}
@@ -524,7 +526,7 @@ jobs:
           grep -q 'DEVUZ-CORE-TEST OK' core.log || { echo "::error::тест «Ядра» не прошёл"; rc=1; }
           exit $rc
 
-      - name: Тест места под «Офис» (подписанный образ, чужой и без подписи — отказ, Caddy, токен «Ядра»)
+      - name: Тест места под «Офис» (подписанный образ, чужой и без подписи — отказ, Caddy, токен «Ядра», выход наружу)
         if: env.SABOTAGE == 'none'
         run: |
           # Заглушка «Офиса» (настоящий — в закрытом репозитории): собираем,
@@ -551,7 +553,8 @@ jobs:
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=office EXPECT_VERSION="$DEVUZ_VERSION" LOG=office.log TEST_TITLE="Тест «Офиса»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK UNSIGNED_REFUSED FOREIGN_KEY_REFUSED STATUS_TO_OFFICE; do
+          for k in STARTED VIA_CADDY CORE_FROM_OFFICE TOKEN SETUP_CODE DB FALLBACK UNSIGNED_REFUSED FOREIGN_KEY_REFUSED STATUS_TO_OFFICE \
+                   EXTERNAL_LOCAL_ONLY VIA_MARK TUNNEL_OFF_BY_DEFAULT TUNNEL_BAD_REFUSED TUNNEL_STARTS TUNNEL_OFF; do
             line=$(grep -m1 -o "DEVUZ-OFFICE-TEST $k .*" office.log || true)
             echo "- ${line:-❌ нет DEVUZ-OFFICE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
