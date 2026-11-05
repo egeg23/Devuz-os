@@ -1,12 +1,14 @@
 {
   "_": "Про (128 ГБ общей памяти, до 15 человек). Видео — только ночью (задача video-night, когда появится); голосовой помощник, 3D, музыка — на Джарвисе. /etc/devuz/core/tasks.json перекрывает этот файл.",
   "backends": {
-    "llm": { "url": "http://127.0.0.1:8081/v1", "concurrency": 2, "max_queue": 15, "timeout_s": 120, "key_file": "/run/devuz/llm-key/key" }
+    "llm": { "url": "http://127.0.0.1:8081/v1", "concurrency": 2, "max_queue": 15, "timeout_s": 120, "key_file": "/run/devuz/llm-key/key" },
+    "stt": { "url": "http://stt", "socket": "/run/devuz/stt/stt.sock", "concurrency": 1, "max_queue": 10, "timeout_s": 900, "max_wait_s": 900 }
   },
   "tasks": {
     "chat":    { "backend": "llm", "model": "chat" },
     "chat-uz": { "backend": "llm", "model": "chat" },
-    "code":    { "backend": "llm", "model": "chat" }
+    "code":    { "backend": "llm", "model": "chat" },
+    "stt":     { "backend": "stt", "model": "stt" }
   },
   "unavailable": {
     "video":  "видео сразу — на коробке Джарвис; на Про — только ночью",

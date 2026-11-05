@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Вместо ffmpeg для whisper-server --convert (настоящий ffmpeg — сотни
+# мегабайт). Сервер зовёт только два вида команд:
+#   ffmpeg -version
+#   ffmpeg -i "<вход>" -y -ar 16000 -ac 1 -c:a pcm_s16le "<выход>"
+# OGG/Opus (голосовые Telegram и WhatsApp) — через opusdec в WAV 16 кГц.
+# WAV, MP3, FLAC whisper.cpp читает сам (и сам приводит к 16 кГц моно) —
+# их просто копируем. Остальное (m4a и т. п.) whisper не прочтёт: ошибка.
+[ "${1:-}" = -version ] && { echo "devuz ffmpeg (opusdec)"; exit 0; }
+in="" out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i) in=$2; shift 2 ;;
+        *) out=$1; shift ;;
+    esac
+done
+[ -n "$in" ] && [ -n "$out" ] && [ -f "$in" ] || { echo "devuz ffmpeg: нет входа или выхода" >&2; exit 1; }
+if [ "$(head -c 4 "$in")" = OggS ]; then
+    exec opusdec --quiet --rate 16000 --force-wav "$in" "$out"
+fi
+exec cp "$in" "$out"

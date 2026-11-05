@@ -22,7 +22,7 @@ model_mb=0
 [ -n "$model" ] && [ -d "/var/lib/devuz/models/$model" ] && model_mb=$(du -sm "/var/lib/devuz/models/$model" 2>/dev/null | cut -f1)
 
 svc=""
-for u in caddy core llm office postgres cloudflared tailscale; do
+for u in caddy core llm stt office postgres cloudflared tailscale; do
     st=$(systemctl is-active "devuz-svc-$u.service" 2>/dev/null); st=${st:-inactive}
     svc="$svc${svc:+,}\"$u\":\"$st\""
 done

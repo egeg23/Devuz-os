@@ -15,7 +15,10 @@
 # Подпись проверяется всегда.
 #   models-verify            — модель из /etc/devuz/llm-model;
 #   models-verify <имя>      — эта модель;
-#   models-verify --check <имя> — только проверить, ничего не писать.
+#   models-verify --check <имя> — только проверить, ничего не писать;
+#   models-verify --stt [<имя>] — модель распознавания речи (whisper.cpp,
+#                  файл весов .bin) из /etc/devuz/stt-model; настройки сервера
+#                  речи — в /run/devuz/stt-env/stt.env.
 set -u
 shopt -s dotglob nullglob
 root=/var/lib/devuz/models
@@ -23,9 +26,16 @@ stamps=/var/lib/devuz/models-verified
 keyring=/usr/lib/devuz/keys/models.gpg
 fail() { echo "DEVUZ-MODELS ERROR ${name:-?}: $*"; exit 78; }
 
-write=1
-[ "${1:-}" = --check ] && { write=0; shift; }
-name=${1:-$(cat /etc/devuz/llm-model 2>/dev/null || true)}
+write=1 kind=llm
+while :; do
+    case "${1:-}" in
+        --check) write=0; shift ;;
+        --stt) kind=stt; shift ;;
+        *) break ;;
+    esac
+done
+if [ "$kind" = stt ]; then cfg=/etc/devuz/stt-model ext=bin; else cfg=/etc/devuz/llm-model ext=gguf; fi
+name=${1:-$(cat "$cfg" 2>/dev/null || true)}
 [[ "$name" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail "плохое имя модели «$name»"
 dir=$root/$name
 [ -f "$dir/MANIFEST" ] && [ -f "$dir/MANIFEST.sig" ] || fail "нет MANIFEST или MANIFEST.sig в $dir"
@@ -64,14 +74,14 @@ while read -r k a b c rest || [ -n "${k:-}" ]; do
             [ -f "$f" ] && [ ! -L "$f" ] || fail "нет файла $c"
             [ "$(stat -c %s "$f")" = "$b" ] || fail "$c: размер $(stat -c %s "$f"), в манифесте $b"
             [ "$fresh" = 1 ] || [ "$(hash_of "$f")" = "$a" ] || fail "$c: sha256 не совпал с манифестом"
-            # Сервер модели получает файл весов (.gguf), а не первый в списке:
-            # в манифесте могут быть и другие файлы (токенизатор и т. п.).
-            listed[$c]=1; [ -n "$first" ] || [[ "$c" != *.gguf ]] || first=$c ;;
+            # Сервер модели получает файл весов (.gguf, у речи — .bin), а не первый
+            # в списке: в манифесте могут быть и другие файлы (токенизатор и т. п.).
+            listed[$c]=1; [ -n "$first" ] || [[ "$c" != *."$ext" ]] || first=$c ;;
         *) fail "неизвестное поле манифеста «$k»" ;;
     esac
 done <"$dir/MANIFEST"
 [ "$mname" = "$name" ] || fail "в манифесте имя «$mname», а каталог «$name»"
-[ -n "$first" ] || fail "в манифесте нет файла весов .gguf"
+[ -n "$first" ] || fail "в манифесте нет файла весов .$ext"
 for f in "$dir"/*; do
     b=${f##*/}
     case "$b" in MANIFEST|MANIFEST.sig) continue ;; esac
@@ -84,7 +94,12 @@ else
     [ "$write" = 0 ] || { mkdir -p "$stamps"; printf '%s\n' "$want_stamp" >"$stamps/$name"; }
     echo "DEVUZ-MODELS $name: подпись и хеши верны"
 fi
-if [ "$write" = 1 ]; then
+if [ "$write" = 1 ] && [ "$kind" = stt ]; then
+    # Серверу речи — только путь к весам: ключа у whisper-server нет, к нему
+    # ходят через сокет, который видит только «Ядро».
+    mkdir -p /run/devuz/stt-env; chmod 700 /run/devuz/stt-env
+    ( umask 077; printf 'STT_MODEL=/models/%s/%s\n' "$name" "$first" >/run/devuz/stt-env/stt.env )
+elif [ "$write" = 1 ]; then
     # Ключ сервера модели — новый на каждую загрузку, читать может только
     # root: так к модели ходит только «Ядро» (токены, очередь, учёт), а не
     # любой процесс коробки с доступом к 127.0.0.1.

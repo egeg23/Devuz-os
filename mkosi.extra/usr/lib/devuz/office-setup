@@ -26,7 +26,7 @@ if [ ! -s "$etc/setup-code" ] && [ ! -e /var/lib/devuz/office/auth.json ]; then
     echo "DEVUZ-OFFICE код первого входа в «Офис» создан: $etc/setup-code"
 fi
 h=$(sha256sum <"$etc/core-token" | cut -d' ' -f1)
-want=$(printf '{"token_sha256":"%s","tasks":["chat","chat-uz","code","embed"],"priority":"live"}\n' "$h")
+want=$(printf '{"token_sha256":"%s","tasks":["chat","chat-uz","code","embed","stt"],"priority":"live"}\n' "$h")
 if [ "$(cat "$app" 2>/dev/null)" != "$want" ]; then
     ( umask 022; printf '%s\n' "$want" >"$app.new" ) && mv "$app.new" "$app"
     systemctl reload devuz-svc-core.service 2>/dev/null || true

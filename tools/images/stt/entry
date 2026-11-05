@@ -1,0 +1,17 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Распознавание речи: whisper-server слушает 127.0.0.1:8082 ВНУТРИ своего
+# контейнера (сети у контейнера нет — Network=none), а наружу — только сокет
+# /run/stt/stt.sock (0600, root) для «Ядра». Ключа у whisper-server нет,
+# поэтому мимо «Ядра» к нему не пройти иначе как через этот сокет.
+set -u
+: "${STT_MODEL:?нет STT_MODEL — модель не проверена}"
+rm -f /run/stt/stt.sock
+whisper-server --host 127.0.0.1 --port 8082 -m "$STT_MODEL" --convert --tmp-dir /tmp \
+    -t "${STT_THREADS:-4}" --inference-path /inference &
+umask 077
+socat UNIX-LISTEN:/run/stt/stt.sock,fork,mode=600 TCP:127.0.0.1:8082 &
+# Упала любая из двух — выходим, сторож поднимет обе.
+wait -n
+kill 0 2>/dev/null
+exit 1
