@@ -144,6 +144,10 @@ jobs:
           # (ни BuildKit, ни классический сборщик) — собираем Podman'ом.
           sudo podman build --security-opt apparmor=unconfined -t localhost/devuz-whisper:v1.9.5 tools/images/stt
           sudo skopeo copy --dest-tls-verify=false containers-storage:localhost/devuz-whisper:v1.9.5 docker://10.0.2.2:5001/devuz-whisper:v1.9.5
+          # Слои сборки (компилятор, исходники) на / раннера не нужны: там мало
+          # места, а тесты обновления и отката идут позже.
+          sudo podman system reset -f >/dev/null 2>&1 || sudo podman rmi -af
+          df -h / /mnt
           # Источники — по точному отпечатку (digest), а не по тегу: что
           # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
           # отпечатком (теги в именах справа: postgres 17, caddy 2,
