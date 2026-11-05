@@ -135,6 +135,11 @@ jobs:
           cp mkosi.extra/usr/share/devuz/containers/registries.d/default.yaml "$cfg/registries.d/"
           printf '[[registry]]\nprefix = "ghcr.io/egeg23"\nlocation = "10.0.2.2:5001"\ninsecure = true\n' >"$cfg/registries.conf"
           : >"$tree/images.list"
+          # Распознавание речи — наш образ: только whisper-server из закреплённого
+          # коммита whisper.cpp на закреплённой основе Debian 13
+          # (tools/images/stt). Собираем здесь и подписываем, как остальные.
+          docker build -t devuz-whisper:v1.9.5 tools/images/stt
+          skopeo copy --dest-tls-verify=false docker-daemon:devuz-whisper:v1.9.5 docker://10.0.2.2:5001/devuz-whisper:v1.9.5
           # Источники — по точному отпечатку (digest), а не по тегу: что
           # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
           # отпечатком (теги в именах справа: postgres 17, caddy 2,
@@ -145,9 +150,11 @@ jobs:
                       "ghcr.io/tailscale/tailscale@sha256:f97ea471667bd94023f76e228c5be0b95564cdba2f9501cb084eeef139d8b65e devuz-tailscale:v1.84.3" \
                       "docker.io/cloudflare/cloudflared@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5 devuz-cloudflared:2026.10.1" \
                       "mirror.gcr.io/library/node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da devuz-node:22" \
-                      "ghcr.io/ggml-org/llama.cpp@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b devuz-llama:server"; do
+                      "ghcr.io/ggml-org/llama.cpp@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b devuz-llama:server" \
+                      "built devuz-whisper:v1.9.5"; do
             set -- $pair; src=$1; img=$2; repo=${img%%:*}
-            skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
+            # built — собран выше и уже лежит в реестре сборки.
+            [ "$src" = built ] || skopeo copy --dest-tls-verify=false "docker://$src" "docker://10.0.2.2:5001/$img"
             d=$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://10.0.2.2:5001/$img")
             COSIGN_PASSWORD= cosign sign -y --key "$WORK/cosign/cosign.key" --tlog-upload=false \
               --allow-insecure-registry --sign-container-identity "ghcr.io/egeg23/$repo" "10.0.2.2:5001/$repo@$d"
@@ -188,6 +195,28 @@ jobs:
           printf 'name: smollm2-135m\nversion: 1\nlicense: Apache-2.0\nformat: gguf\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
           GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
           cat "$d/MANIFEST"
+          # Модель речи для теста: whisper small, 5 бит (MIT), ~190 МБ, понимает и
+          # русский, и узбекский. Закреплена коммитом и sha256, манифест — тем же
+          # тестовым ключом моделей.
+          f=ggml-small-q5_1.bin
+          sha=ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb
+          d="$WORK/test-models-tree/usr/share/devuz/test-models/whisper-small-q5"
+          mkdir -p "$d"
+          curl -fsSL -o "$d/$f" "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/$f"
+          echo "$sha  $d/$f" | sha256sum --strict -c -
+          printf 'name: whisper-small-q5\nversion: 1\nlicense: MIT\nformat: ggml\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
+          GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
+          cat "$d/MANIFEST"
+          # Фразы для теста речи — синтез espeak-ng: русская — голосовым OGG/Opus,
+          # как приходит из Telegram, узбекская — WAV.
+          sudo apt-get install -y --no-install-recommends espeak-ng opus-tools >/dev/null
+          espeak-ng --voices=uz | grep -qw uz || { echo "::error::в espeak-ng нет узбекского голоса"; exit 1; }
+          sp="$WORK/test-models-tree/usr/share/devuz/test-models/speech"
+          mkdir -p "$sp"
+          espeak-ng -v ru -s 140 -w "$WORK/ru.wav" "Здравствуйте. Завтра в десять часов совещание по новому проекту."
+          opusenc --quiet "$WORK/ru.wav" "$sp/ru.ogg"
+          espeak-ng -v uz -s 130 -w "$sp/uz.wav" "Assalomu alaykum. Ertaga soat o'nda yig'ilish bo'ladi."
+          ls -la "$sp"
           # Только в MKOSI_DIRS (тестовая сборка и запуски); боевая сборка
           # перечисляет свои деревья явно — модели в ней нет.
           echo "MKOSI_DIRS=$MKOSI_DIRS --extra-tree=$WORK/test-models-tree" >>"$GITHUB_ENV"
@@ -526,6 +555,20 @@ jobs:
           grep -q 'DEVUZ-UPS-TEST OK' ups.log || { echo "::error::тест ИБП не прошёл"; rc=1; grep -E 'DEVUZ-UPS-TEST ERROR' ups.log | head; }
           exit $rc
 
+      - name: Тест речи (модель с подписью, только сокет, русская и узбекская фраза → текст)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=stt EXPECT_VERSION="$DEVUZ_VERSION" LOG=stt.log TEST_TITLE="Тест речи"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in STT_UP SOCKET_ONLY RU_TEXT UZ_TEXT NEED_TOKEN BAD_SIG_REFUSED; do
+            line=$(grep -m1 -o "DEVUZ-STT-TEST $k .*" stt.log || true)
+            echo "- ${line:-❌ нет DEVUZ-STT-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-STT-TEST OK' stt.log || { echo "::error::тест речи не прошёл"; rc=1; grep -E 'DEVUZ-STT-TEST ERROR' stt.log | head; }
+          exit $rc
+
       - name: Тест «Ядра» (токены, права, учёт, очередь)
         if: env.SABOTAGE == 'none'
         run: |
@@ -703,6 +746,8 @@ jobs:
             support.log
             core.log
             models.log
+            ups.log
+            stt.log
             rollback.log
           if-no-files-found: warn
           retention-days: 7

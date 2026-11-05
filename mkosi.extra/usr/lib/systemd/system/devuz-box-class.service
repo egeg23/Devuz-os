@@ -3,7 +3,7 @@
 Description=DevUz: класс коробки (Лайт / Про / Джарвис)
 DefaultDependencies=no
 After=local-fs.target devuz-factory-etc.service
-Before=devuz-svc-core.service devuz-svc-llm.service sysinit.target
+Before=devuz-svc-core.service devuz-svc-llm.service devuz-svc-stt.service sysinit.target
 
 [Service]
 Type=oneshot

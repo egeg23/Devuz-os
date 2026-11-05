@@ -7,7 +7,11 @@
 //   GET  /v1/health            — живо ли «Ядро» и длина очередей (без токена);
 //   GET  /v1/models[/<id>]     — задачи, доступные этому токену;
 //   POST /v1/chat/completions  — model = задача («chat», «chat-uz», «code»…),
-//                                 «Ядро» само выбирает модель по таблице коробки.
+//                                 «Ядро» само выбирает модель по таблице коробки;
+//   POST /v1/audio/transcriptions?model=stt&language=ru|uz|auto
+//                               — речь в текст: тело — сам файл (OGG/Opus, WAV,
+//                                 MP3, FLAC) до 50 МБ; ответ { text, language,
+//                                 duration, segments: [{ start, end, text }] }.
 // Токен приложения — Authorization: Bearer <токен>. На коробке хранится
 // только sha256 токена: /etc/devuz/core/apps.d/<приложение>.json
 //   {"token_sha256": "...", "tasks": ["chat"], "priority": "staff"}
@@ -37,6 +41,8 @@ const USAGE_DIR = "/var/lib/devuz/core";
 const SOCK = "/run/devuz/core/core.sock";
 const PRIORITIES = ["live", "chat", "staff", "night"];
 const BODY_LIMIT = 2 << 20; // 2 МБ: текстовым задачам больше не нужно
+const AUDIO_LIMIT = 50 << 20; // запись совещания на час в Opus — ~30 МБ
+const LANGS = new Set(["ru", "uz", "en", "auto"]);
 const USAGE_BUF_LIMIT = 1 << 20; // буферизуем обычный ответ для учёта не больше 1 МБ
 
 function log(...a) { console.log("DEVUZ-CORE", ...a); }
@@ -50,8 +56,10 @@ function checkTasks(t) {
     if (!b || typeof b.url !== "string") throw new Error(`у бэкенда «${name}» нет url`);
     const u = new URL(b.url); // бросит на кривом адресе
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`бэкенд «${name}»: только http или https`);
+    // Сокет вместо адреса — для серверов без ключа (речь): к ним ходит только «Ядро».
+    if (b.socket !== undefined && (typeof b.socket !== "string" || !/^\/run\/devuz\/[A-Za-z0-9._/-]+\.sock$/.test(b.socket) || b.socket.includes(".."))) throw new Error(`бэкенд «${name}»: socket — путь /run/devuz/….sock`);
     const int = (v, d, min) => (v === undefined ? d : Number.isInteger(v) && v >= min ? v : NaN);
-    const be = { url: b.url.replace(/\/+$/, ""), concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000, keyFile: typeof b.key_file === "string" ? b.key_file : null };
+    const be = { url: b.url.replace(/\/+$/, ""), socket: b.socket || null, concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000, keyFile: typeof b.key_file === "string" ? b.key_file : null };
     if ([be.concurrency, be.maxQueue, be.timeoutMs, be.maxWaitMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s, max_wait_s — целые числа`);
     backends.set(name, be);
   }
@@ -336,6 +344,80 @@ async function chat(req, res, app, fmt) {
   }
 }
 
+// Речь в текст. Тело — файл как есть; бэкенду (whisper-server) — multipart.
+// Очередь та же, что у чата, но у речи свой бэкенд: длинная запись не держит
+// чат, а приоритет приложения работает так же.
+async function transcribe(req, res, app, url) {
+  const task = url.searchParams.get("model") || "stt";
+  if (!TASKS.tasks.has(task)) {
+    const where = TASKS.unavailable.has(task) ? `: ${TASKS.unavailable.get(task)}` : "";
+    req.resume();
+    return fail(res, 404, "not_found_error", `задачи «${task}» на этой коробке нет${where}`);
+  }
+  if (!app.tasks.has(task)) { req.resume(); return fail(res, 403, "permission_error", `приложению «${app.id}» задача «${task}» не разрешена`); }
+  const lang = url.searchParams.get("language") || "auto";
+  if (!LANGS.has(lang)) { req.resume(); return fail(res, 400, "invalid_request_error", "language — ru, uz, en или auto"); }
+  let audio;
+  try { audio = await readBody(req, AUDIO_LIMIT); } catch (e) {
+    if (e.tooLarge) { fail(res, 413, "invalid_request_error", `запись больше ${AUDIO_LIMIT >> 20} МБ`, { connection: "close" }); req.resume(); return; }
+    throw e;
+  }
+  if (!audio.length) return fail(res, 400, "invalid_request_error", "пустое тело: нужен сам файл записи");
+  const route = TASKS.tasks.get(task), bname = route.backend, be = TASKS.backends.get(bname);
+  let prio = app.priority;
+  const asked = String(req.headers["x-devuz-priority"] || "");
+  if (PRIORITIES.includes(asked) && PRIORITIES.indexOf(asked) > PRIORITIES.indexOf(prio)) prio = asked;
+  const t0 = Date.now();
+  const bytes = audio.length;
+  const rec = (x) => usage({ ts: new Date().toISOString(), app: app.id, task, model: route.model, prio, audio_bytes: bytes, ...x });
+  const w = enqueue(bname, prio);
+  if (!w) { rec({ wait_ms: 0, ms: 0, status: 429 }); return fail(res, 429, "rate_limit_error", "коробка занята, повторите позже", { "retry-after": "10" }); }
+  let gone = false;
+  const onGone = () => { gone = true; cancel(bname, w); };
+  res.on("close", onGone);
+  const ok = await w.ready;
+  res.off("close", onGone);
+  if (!ok) { rec({ wait_ms: Date.now() - t0, ms: Date.now() - t0, status: 503 }); if (!gone) fail(res, 503, "overloaded_error", `очередь не дошла за ${be.maxWaitMs / 1000} с`, { "retry-after": "30" }); return; }
+  if (gone || res.destroyed) { release(bname); return; }
+  const waited = Date.now() - t0;
+  let done = false;
+  const finish = (x) => { if (done) return; done = true; release(bname); rec({ wait_ms: waited, ms: Date.now() - t0, ...x }); };
+  const boundary = "devuz" + crypto.randomBytes(12).toString("hex");
+  const field = (k, v) => `--${boundary}\r\ncontent-disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`;
+  const body = Buffer.concat([
+    Buffer.from(field("response_format", "verbose_json") + field("temperature", "0.0") + field("language", lang) +
+      `--${boundary}\r\ncontent-disposition: form-data; name="file"; filename="audio"\r\ncontent-type: application/octet-stream\r\n\r\n`),
+    audio, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+  audio = null;
+  const target = new URL(be.url + "/inference");
+  const opts = { method: "POST", headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "content-length": body.length } };
+  if (be.socket) Object.assign(opts, { socketPath: be.socket, path: target.pathname });
+  if (be.keyFile) { try { opts.headers.authorization = "Bearer " + fs.readFileSync(be.keyFile, "utf8").trim(); } catch {} }
+  const mod = !be.socket && target.protocol === "https:" ? https : http;
+  const onResp = (r) => {
+    const parts = []; let size = 0;
+    r.on("data", (c) => { size += c.length; if (size <= 8 << 20) parts.push(c); });
+    r.on("end", () => {
+      let j = null;
+      try { j = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch {}
+      if (r.statusCode !== 200 || !j || j.error || size > 8 << 20) {
+        finish({ status: r.statusCode === 200 ? 502 : r.statusCode || 502 });
+        return fail(res, r.statusCode === 200 ? 502 : r.statusCode || 502, "api_error", "распознавание не удалось: " + String(j && j.error || r.statusCode).slice(0, 300));
+      }
+      const segments = (Array.isArray(j.segments) ? j.segments : []).map((x) => ({ start: Number(x.start) || 0, end: Number(x.end) || 0, text: String(x.text || "").trim() }));
+      const out = { text: String(j.text || "").trim(), language: typeof j.language === "string" ? j.language : null, duration: Number(j.duration) || null, segments };
+      finish({ status: 200, audio_s: out.duration });
+      send(res, 200, out, { "x-devuz-task": task, "x-devuz-priority": prio });
+    });
+    r.on("close", () => { if (r.complete) return; finish({ status: 502 }); res.destroy(); });
+  };
+  const up = be.socket ? http.request(opts, onResp) : mod.request(target, opts, onResp);
+  up.setTimeout(be.timeoutMs, () => up.destroy(Object.assign(new Error(`распознавание молчит дольше ${be.timeoutMs / 1000} с`), { timeout: true })));
+  up.on("error", (e) => { const code = e.timeout ? 504 : 503; finish({ status: code }); if (!res.headersSent) fail(res, code, "unavailable", "распознавание недоступно: " + e.message); else res.destroy(); });
+  res.on("close", () => { if (!done) { up.destroy(); finish({ status: 499 }); } });
+  up.end(body);
+}
+
 function health(res) {
   const q = {};
   const now = Date.now();
@@ -358,6 +440,7 @@ async function handle(req, res) {
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return chat(req, res, app, "openai");
   if (req.method === "POST" && url.pathname === "/v1/messages") return chat(req, res, app, "anthropic");
+  if (req.method === "POST" && url.pathname === "/v1/audio/transcriptions") return transcribe(req, res, app, url);
   return fail(res, 404, "not_found_error", "нет такого метода в API v1");
 }
 

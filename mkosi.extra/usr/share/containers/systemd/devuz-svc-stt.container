@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Распознавание речи: whisper.cpp (whisper-server, MIT), наш образ.
+# Сети у контейнера нет: whisper-server слушает 127.0.0.1:8082 только внутри
+# себя, наружу — сокет /run/devuz/stt/stt.sock (0600, root), к нему ходит
+# «Ядро» (бэкенд stt в tasks.json). Ключа у whisper-server нет — поэтому так.
+# Какая модель — /etc/devuz/stt-model (имя каталога в /var/lib/devuz/models);
+# грузится, только если подпись манифеста и хеши верны (devuz-stt-verify).
+# Речь — в фоновом ломте devuz-ai.slice и ниже чата по процессору (Nice).
+[Unit]
+Description=DevUz: распознавание речи (whisper.cpp)
+DefaultDependencies=no
+Wants=devuz-images.service
+After=basic.target devuz-images.service devuz-stt-verify.service
+Requires=devuz-stt-verify.service
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/etc/devuz/stt-model
+
+[Container]
+ContainerName=devuz-stt
+Image=ghcr.io/egeg23/devuz-whisper:v1.9.5
+Pull=never
+Network=none
+Volume=/var/lib/devuz/models:/models:ro
+Volume=/run/devuz/stt:/run/stt
+EnvironmentFile=/run/devuz/stt-env/stt.env
+DropCapability=all
+NoNewPrivileges=true
+ReadOnly=true
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:8082/health
+HealthInterval=10s
+HealthStartPeriod=300s
+HealthRetries=6
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /run/devuz/stt
+ExecStartPre=/usr/bin/chmod 700 /run/devuz/stt
+Slice=devuz-ai.slice
+Nice=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

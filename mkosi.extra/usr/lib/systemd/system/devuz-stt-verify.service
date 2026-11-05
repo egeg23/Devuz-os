@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Проверка модели распознавания речи перед сервером речи (devuz-svc-stt):
+# подпись манифеста и хеши файлов — как у модели чата (devuz-llm-verify).
+[Unit]
+Description=DevUz: проверка модели речи (подпись и хеши)
+DefaultDependencies=no
+After=basic.target
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/etc/devuz/stt-model
+PartOf=devuz-svc-stt.service
+OnFailure=devuz-alert@%n.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/devuz/models-verify --stt
+Slice=devuz-ai.slice
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+StandardOutput=journal+console
