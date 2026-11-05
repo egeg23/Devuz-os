@@ -512,6 +512,20 @@ jobs:
           pkill -f moto_server || true
           exit $rc
 
+      - name: Тест ИБП (без ИБП ничего не падает; свет пропал, вернулся, заряд на исходе — выключение)
+        if: env.SABOTAGE == 'none'
+        run: |
+          export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
+          export TEST_CRED=ups EXPECT_VERSION="$DEVUZ_VERSION" LOG=ups.log TEST_TITLE="Тест ИБП"
+          rc=0; tests/boot-test.sh || rc=$?
+          for k in NO_UPS_ALIVE NO_UPS_STATE NUT_UNITS_OFF LINE UPSD_LOCAL ON_BATTERY BACK_ONLINE LOW_BATTERY_SHUTDOWN; do
+            line=$(grep -m1 -o "DEVUZ-UPS-TEST $k .*" ups.log || true)
+            echo "- ${line:-❌ нет DEVUZ-UPS-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
+            [ -n "$line" ] || rc=1
+          done
+          grep -q 'DEVUZ-UPS-TEST OK' ups.log || { echo "::error::тест ИБП не прошёл"; rc=1; grep -E 'DEVUZ-UPS-TEST ERROR' ups.log | head; }
+          exit $rc
+
       - name: Тест «Ядра» (токены, права, учёт, очередь)
         if: env.SABOTAGE == 'none'
         run: |

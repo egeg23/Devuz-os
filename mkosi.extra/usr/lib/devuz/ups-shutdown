@@ -1,0 +1,14 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Заряд ИБП на исходе: коробка выключается сама и аккуратно — systemd
+# останавливает службы по порядку (PostgreSQL закрывает базу), диски
+# размонтируются. Включится, когда дадут свет (если в BIOS «включаться при
+# появлении питания»). В тестовом образе — без выключения, только отметка.
+set -u
+echo "DEVUZ-POWER SHUTDOWN заряд ИБП на исходе — выключаюсь" | systemd-cat -t devuz-power -p warning 2>/dev/null || true
+printf '%s SHUTDOWN\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>/run/devuz/power.log
+if [ -e /usr/lib/devuz/ups-test-noshutdown ]; then
+    touch /run/devuz/ups-shutdown-called
+    exit 0
+fi
+exec systemctl poweroff

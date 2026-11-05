@@ -11,6 +11,17 @@ enable devuz-backup.timer
 # «Состояние коробки» для «Офиса» раз в минуту.
 enable devuz-status.timer
 enable devuz-box-class.service
+# ИБП: своя служба devuz-ups (NUT с настройками в /run). Юниты пакета NUT
+# выключены: без ИБП они падали бы при каждой загрузке.
+enable devuz-ups.service
+disable nut-driver-enumerator.path
+disable nut-driver-enumerator.service
+disable nut-driver.target
+disable nut-server.service
+disable nut-monitor.service
+disable nut-client.service
+disable ups-monitor.service
+disable nut.target
 # Время: без верных часов не работают сертификаты коробки (Caddy выписывает
 # их на 12 ч) и TLS к серверу обновлений. NTP — из DHCP офиса.
 enable systemd-timesyncd.service

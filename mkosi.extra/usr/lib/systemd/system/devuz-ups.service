@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# ИБП: найти USB-ИБП, следить за питанием, выключить коробку при низком заряде.
+[Unit]
+Description=DevUz: ИБП (питание коробки)
+After=systemd-udev-trigger.service local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/devuz/ups
+Restart=on-failure
+RestartSec=30
+KillMode=control-group
+# В выключении — до остановки баз: upsmon сам по себе ничего не держит.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
