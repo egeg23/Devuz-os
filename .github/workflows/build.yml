@@ -138,7 +138,10 @@ jobs:
           # Распознавание речи — наш образ: только whisper-server из закреплённого
           # коммита whisper.cpp на закреплённой основе Debian 13
           # (tools/images/stt). Собираем здесь и подписываем, как остальные.
-          docker build -t devuz-whisper:v1.9.5 tools/images/stt
+          # Шаги RUN под профилем AppArmor по умолчанию на этом раннере не
+          # запускаются («unable to apply apparmor profile»), поэтому, как и
+          # реестр сборки выше, — без него; это умеет только классический сборщик.
+          DOCKER_BUILDKIT=0 docker build --security-opt apparmor=unconfined -t devuz-whisper:v1.9.5 tools/images/stt
           skopeo copy --dest-tls-verify=false docker-daemon:devuz-whisper:v1.9.5 docker://10.0.2.2:5001/devuz-whisper:v1.9.5
           # Источники — по точному отпечатку (digest), а не по тегу: что
           # подписываем своим ключом, видно в diff. Обновить образ — PR с новым
