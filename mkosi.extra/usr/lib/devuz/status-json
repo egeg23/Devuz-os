@@ -3,7 +3,7 @@
 # «Состояние коробки» для «Офиса»: раз в минуту пишет /run/devuz/status/box.json
 # (только чтение для «Офиса»). Ни секретов, ни данных клиентов — только
 # числа и состояния: версия, память, диск, модель, службы, копии, выход
-# наружу, канал поддержки.
+# наружу, канал поддержки, питание (ИБП).
 set -u
 out=/run/devuz/status
 mkdir -p "$out"; chmod 755 "$out"
@@ -32,10 +32,21 @@ command -v devuz-backup >/dev/null && backup=$(devuz-backup status 2>/dev/null |
 tunnel=absent; url=""
 if command -v devuz-tunnel >/dev/null; then tunnel=$(devuz-tunnel status 2>/dev/null || echo off); url=$(cat /etc/devuz/tunnel/url 2>/dev/null || true); fi
 support=$(devuz-support status 2>/dev/null || echo off)
+# Питание (devuz-ups): нет ИБП — "none"; от сети — "line"; от батареи — "battery"; заряд на исходе — "low".
+power='{"state":"none"}'
+if ups=$(upsc ups@127.0.0.1 2>/dev/null) && [ -n "$ups" ]; then
+    v() { printf '%s\n' "$ups" | sed -n "s/^$1: //p" | head -n1; }
+    st=" $(v ups.status) "; pstate=line
+    case "$st" in *" OB "*) pstate=battery ;; esac
+    case "$st" in *" LB "*) pstate=low ;; esac
+    charge=$(v battery.charge); runtime=$(v battery.runtime); pmodel=$(v device.model); [ -n "$pmodel" ] || pmodel=$(v ups.model)
+    charge=${charge%%.*}; runtime=${runtime%%.*}
+    power=$(printf '{"state":"%s","charge":%d,"runtime_s":%d,"model":"%s"}' "$pstate" "${charge:-0}" "${runtime:-0}" "$(esc "$pmodel")")
+fi
 
-printf '{"at":"%s","version":"%s","uptime_s":%d,"class":"%s","box_id":"%s","cpu":{"threads":%d,"load1":%s},"mem":{"total_mb":%d,"used_mb":%d},"disk":{"total_mb":%d,"used_mb":%d},"model":{"name":"%s","size_mb":%d},"services":{%s},"backup":%s,"tunnel":{"state":"%s","url":"%s"},"support":"%s"}\n' \
+printf '{"at":"%s","version":"%s","uptime_s":%d,"class":"%s","box_id":"%s","cpu":{"threads":%d,"load1":%s},"mem":{"total_mb":%d,"used_mb":%d},"disk":{"total_mb":%d,"used_mb":%d},"model":{"name":"%s","size_mb":%d},"services":{%s},"backup":%s,"tunnel":{"state":"%s","url":"%s"},"support":"%s","power":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(esc "${IMAGE_VERSION:-unknown}")" "$up" "$(esc "$class")" "$(head -c 12 /etc/machine-id)" \
     "$threads" "$load" "$mem_total" "$((mem_total - mem_avail))" "$disk_total" "$disk_used" "$(esc "$model")" "${model_mb:-0}" \
-    "$svc" "$backup" "$(esc "$tunnel")" "$(esc "$url")" "$(esc "$support")" >"$out/box.json.new"
+    "$svc" "$backup" "$(esc "$tunnel")" "$(esc "$url")" "$(esc "$support")" "$power" >"$out/box.json.new"
 chmod 644 "$out/box.json.new"
 mv "$out/box.json.new" "$out/box.json"

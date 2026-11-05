@@ -1,0 +1,46 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Тест ИБП: без ИБП ничего не падает; подставной ИБП (dummy-ups) — «от сети»,
+# «свет пропал», «заряд на исходе» → коробка вызывает выключение. Отметки
+# DEVUZ-UPS-TEST <имя> ok читает тест в Actions.
+set -u
+say() { echo "DEVUZ-UPS-TEST $*"; }
+fail=0
+box() { /usr/lib/devuz/status-json >/dev/null 2>&1; cat /run/devuz/status/box.json; }
+wait_for() { for _ in $(seq "$2"); do eval "$1" && return 0; sleep 1; done; return 1; }
+
+# 1. ИБП нет: служба жива и ждёт, юниты пакета NUT не запущены и не упали.
+wait_for 'systemctl is-active -q devuz-ups' 30 && say "NO_UPS_ALIVE ok" || { say "ERROR devuz-ups: $(systemctl is-active devuz-ups)"; fail=1; }
+if box | grep -q '"power":{"state":"none"}'; then say "NO_UPS_STATE ok"; else say "ERROR питание без ИБП: $(box)"; fail=1; fi
+bad=$(systemctl list-units --all --plain --no-legend 'nut*' | grep -Ev ' inactive | dead ' || true)
+[ -z "$bad" ] && say "NUT_UNITS_OFF ok" || { say "ERROR юниты NUT: $bad"; fail=1; }
+
+# 2. Подставной ИБП «от сети».
+dev=/run/devuz/ups-test.dev
+printf 'device.model: DevUz Test UPS\nups.status: OL\nbattery.charge: 100\nbattery.runtime: 1800\n' >"$dev"
+systemctl restart devuz-ups
+if wait_for 'box | grep -q "\"power\":{\"state\":\"line\",\"charge\":100"' 60; then say "LINE ok: $(box | grep -o '"power":{[^}]*}')"
+else say "ERROR ИБП не на связи: $(box | grep -o '"power":{[^}]*}') $(journalctl -u devuz-ups -n 20 --no-pager | tr '\n' ' ')"; fail=1; fi
+# upsd — только для своих: на внешних адресах его нет.
+if ss -ltnH 'sport = :3493' | grep -vq '127.0.0.1:3493'; then say "ERROR upsd слушает не только 127.0.0.1: $(ss -ltnH 'sport = :3493')"; fail=1; else say "UPSD_LOCAL ok"; fi
+
+# 3. Свет пропал: от батареи, «Офис» видит это в «Состоянии» сразу (ups-notify).
+sleep 2
+printf 'device.model: DevUz Test UPS\nups.status: OB DISCHRG\nbattery.charge: 60\nbattery.runtime: 900\n' >"$dev"
+if wait_for 'grep -q " ONBATT" /run/devuz/power.log 2>/dev/null' 60 && wait_for 'grep -q "\"state\":\"battery\",\"charge\":60" /run/devuz/status/box.json' 10; then say "ON_BATTERY ok"
+else say "ERROR от батареи: $(cat /run/devuz/power.log 2>&1) $(cat /run/devuz/status/box.json)"; fail=1; fi
+
+# 4. Свет вернулся.
+sleep 2
+printf 'device.model: DevUz Test UPS\nups.status: OL CHRG\nbattery.charge: 61\nbattery.runtime: 900\n' >"$dev"
+wait_for 'grep -q " ONLINE" /run/devuz/power.log' 60 && say "BACK_ONLINE ok" || { say "ERROR свет вернулся: $(cat /run/devuz/power.log)"; fail=1; }
+
+# 5. Снова от батареи и заряд на исходе — коробка вызывает аккуратное выключение.
+sleep 2
+printf 'device.model: DevUz Test UPS\nups.status: OB LB\nbattery.charge: 8\nbattery.runtime: 60\n' >"$dev"
+if wait_for '[ -e /run/devuz/ups-shutdown-called ]' 90; then say "LOW_BATTERY_SHUTDOWN ok: $(tail -n 3 /run/devuz/power.log | tr '\n' ' ')"
+else say "ERROR выключение не вызвано: $(cat /run/devuz/power.log) $(journalctl -u devuz-ups -n 20 --no-pager | tr '\n' ' ')"; fail=1; fi
+
+rm -f "$dev"
+[ "$fail" = 0 ] && say "OK" || say "FAIL"
+systemctl start --no-block devuz-selftest.service

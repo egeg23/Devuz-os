@@ -1,0 +1,9 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# upsmon сообщает: свет пропал (ONBATT), вернулся (ONLINE), заряд на исходе
+# (LOWBATT)… Пишем в журнал и сразу обновляем «Состояние коробки» — «Офис»
+# увидит его за секунды и пришлёт push руководителю.
+set -u
+echo "DEVUZ-POWER ${NOTIFYTYPE:-?} $*" | systemd-cat -t devuz-power -p notice 2>/dev/null || true
+printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${NOTIFYTYPE:-?}" >>/run/devuz/power.log
+/usr/lib/devuz/status-json || true

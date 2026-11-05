@@ -1,0 +1,65 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# ИБП коробки (служба devuz-ups). Ищет USB-ИБП (nut-scanner) и поднимает NUT:
+# драйвер, upsd только на 127.0.0.1, upsmon. Свет пропал — ups-notify обновляет
+# «Состояние коробки» (его видит «Офис» и шлёт push), заряд на исходе —
+# ups-shutdown аккуратно выключает коробку: базы и службы закрываются сами.
+# ИБП нет — служба просто ждёт (раз в минуту ищет снова), ничего не падает.
+# Свои юниты Debian (nut-server, nut-monitor…) выключены пресетом: настройки
+# NUT — в /run/devuz/nut, пароль upsd — новый при каждом запуске.
+set -u
+conf=/run/devuz/nut
+export NUT_CONFPATH="$conf" NUT_STATEPATH="$conf/state"
+say() { echo "DEVUZ-POWER $*"; }
+
+install -d -o root -g nut -m 750 "$conf"
+install -d -o nut -g nut -m 770 "$conf/state"
+printf '{"state":"none"}\n' >/run/devuz/power.json
+
+# Какой ИБП: в тесте — подставной (файл /run/devuz/ups-test.dev), иначе — первый найденный по USB.
+dev=""
+until [ -n "$dev" ]; do
+    if [ -f /run/devuz/ups-test.dev ]; then
+        dev=$'[ups]\n  driver = dummy-ups\n  port = /run/devuz/ups-test.dev\n  mode = dummy-once\n  desc = "test"'
+        break
+    fi
+    found=$(nut-scanner -U -q 2>/dev/null || true)
+    # Первая секция вывода: «[nutdev1]» и строки «ключ = "значение"» до пустой строки.
+    if [ -n "$found" ]; then
+        dev=$(printf '%s\n' "$found" | sed -n '/^\[/,/^$/p' | sed -e '1s/^\[.*\]/[ups]/' -e '/^$/,$d')
+        say "найден ИБП: $(printf '%s\n' "$dev" | sed -n 's/^\s*product = //p' | tr -d '"')"
+    else
+        sleep 60
+    fi
+done
+
+pw=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+printf 'MODE=standalone\n' >"$conf/nut.conf"
+printf '%s\n  pollinterval = 5\n' "$dev" >"$conf/ups.conf"
+printf 'LISTEN 127.0.0.1 3493\n' >"$conf/upsd.conf"
+printf '[devuz]\n  password = %s\n  upsmon primary\n' "$pw" >"$conf/upsd.users"
+cat >"$conf/upsmon.conf" <<CONF
+MONITOR ups@127.0.0.1 1 devuz $pw primary
+MINSUPPLIES 1
+RUN_AS_USER root
+SHUTDOWNCMD "/usr/lib/devuz/ups-shutdown"
+NOTIFYCMD /usr/lib/devuz/ups-notify
+POLLFREQ 5
+POLLFREQALERT 5
+FINALDELAY 5
+NOTIFYFLAG ONLINE SYSLOG+EXEC
+NOTIFYFLAG ONBATT SYSLOG+EXEC
+NOTIFYFLAG LOWBATT SYSLOG+EXEC
+NOTIFYFLAG FSD SYSLOG+EXEC
+NOTIFYFLAG COMMOK SYSLOG+EXEC
+NOTIFYFLAG COMMBAD SYSLOG+EXEC
+NOTIFYFLAG SHUTDOWN SYSLOG+EXEC
+CONF
+chown root:nut "$conf"/*.conf "$conf/upsd.users"
+chmod 640 "$conf"/*.conf "$conf/upsd.users"
+
+upsdrvctl -u nut start ups || { say "ERROR драйвер ИБП не запустился"; exit 1; }
+upsd -u nut || { say "ERROR upsd не запустился"; exit 1; }
+say "ИБП на связи"
+/usr/lib/devuz/status-json || true
+exec upsmon -F
