@@ -47,6 +47,7 @@ NOTIFYCMD /usr/lib/devuz/ups-notify
 POLLFREQ 5
 POLLFREQALERT 5
 FINALDELAY 5
+POWERDOWNFLAG $conf/killpower
 NOTIFYFLAG ONLINE SYSLOG+EXEC
 NOTIFYFLAG ONBATT SYSLOG+EXEC
 NOTIFYFLAG LOWBATT SYSLOG+EXEC
@@ -59,7 +60,9 @@ chown root:nut "$conf"/*.conf "$conf/upsd.users"
 chmod 640 "$conf"/*.conf "$conf/upsd.users"
 
 upsdrvctl -u nut start ups || { say "ERROR драйвер ИБП не запустился"; exit 1; }
-upsd -u nut || { say "ERROR upsd не запустился"; exit 1; }
+# Сами программы, а не /sbin/upsd и /sbin/upsmon: в Debian это обёртки, которые
+# читают MODE из /etc/nut/nut.conf, пишут «disabled» и выходят с кодом 0.
+/usr/lib/nut/upsd -u nut || { say "ERROR upsd не запустился"; exit 1; }
 say "ИБП на связи"
 /usr/lib/devuz/status-json || true
-exec upsmon -F
+exec /usr/lib/nut/upsmon -F

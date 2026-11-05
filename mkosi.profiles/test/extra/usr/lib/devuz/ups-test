@@ -22,7 +22,9 @@ systemctl restart devuz-ups
 if wait_for 'box | grep -q "\"power\":{\"state\":\"line\",\"charge\":100"' 60; then say "LINE ok: $(box | grep -o '"power":{[^}]*}')"
 else say "ERROR ИБП не на связи: $(box | grep -o '"power":{[^}]*}') $(journalctl -u devuz-ups -n 20 --no-pager | tr '\n' ' ')"; fail=1; fi
 # upsd — только для своих: на внешних адресах его нет.
-if ss -ltnH 'sport = :3493' | grep -vq '127.0.0.1:3493'; then say "ERROR upsd слушает не только 127.0.0.1: $(ss -ltnH 'sport = :3493')"; fail=1; else say "UPSD_LOCAL ok"; fi
+listen=$(ss -ltnH 'sport = :3493')
+if ! printf '%s\n' "$listen" | grep -q '127.0.0.1:3493'; then say "ERROR upsd не слушает 127.0.0.1:3493"; fail=1
+elif printf '%s\n' "$listen" | grep -vq '127.0.0.1:3493'; then say "ERROR upsd слушает не только 127.0.0.1: $listen"; fail=1; else say "UPSD_LOCAL ok"; fi
 
 # 3. Свет пропал: от батареи, «Офис» видит это в «Состоянии» сразу (ups-notify).
 sleep 2
