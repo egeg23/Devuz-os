@@ -17,7 +17,8 @@ table inet devuz {
         ct state established,related accept
         ct state invalid drop
         # IPv6 без ICMPv6 не работает (поиск соседей, RA); пинг — с пределом.
-        meta l4proto ipv6-icmp accept
+        # 58 — ICMPv6; числом: в образе нет /etc/protocols, имя nft не разрешит.
+        meta l4proto 58 accept
         icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
         icmp type echo-request limit rate 10/second accept
         # Адрес от роутера офиса (ответы DHCP).
