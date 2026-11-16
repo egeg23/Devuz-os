@@ -71,7 +71,10 @@ say "TPM2_PCRS ${tpm2_pcrs}"
 say "TPM2_PUBKEY_PCRS ${tpm2_pubkey_pcrs}"
 [ "$root_luks" = yes ] || { say "ERROR root не зашифрован"; fail=1; }
 [ "$tpm2_token" = yes ] || { say "ERROR нет ключа TPM2 в LUKS2"; fail=1; }
-if [ -e /etc/.devuz-factory-etc ]; then say "FACTORY_ETC yes"; else say "FACTORY_ETC no"; fail=1; fi
+# Метка — версия, для которой /etc сверен с заготовкой: после обновления A→B
+# должна стать B (новые файлы заготовки доложены).
+fe=$(cat /etc/.devuz-factory-etc 2>/dev/null || echo нет)
+if [ "$fe" = "${IMAGE_VERSION:-unknown}" ]; then say "FACTORY_ETC yes ($fe)"; else say "FACTORY_ETC no (метка «$fe», версия ${IMAGE_VERSION:-unknown})"; fail=1; fi
 # Находки разведки недели 1 на пустом /etc: ссылки /etc/alternatives
 # (awk) и настройки PAM (общий /etc/pam.d/other из libpam-runtime; пакета
 # login в образе нет, поэтому /etc/pam.d/login и не ждём).

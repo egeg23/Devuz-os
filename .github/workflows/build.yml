@@ -47,6 +47,9 @@ jobs:
           mkdir -p "$WORK"/{cache,output,workspace}
           echo "MKOSI_DIRS=--cache-directory=$WORK/cache --output-directory=$WORK/output --workspace-directory=$WORK/workspace" >>"$GITHUB_ENV"
 
+      - name: /etc при обновлениях — проверка на раннере (секунды)
+        run: tests/factory-etc.sh
+
       - name: Установить mkosi v27.1
         uses: systemd/mkosi@ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b # v27.1
 

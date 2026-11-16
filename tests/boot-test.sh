@@ -121,7 +121,7 @@ if [ -n "$ready_line" ]; then
     [ "$(field SECURE_BOOT)" = 1 ] || err "Secure Boot не включён (SECURE_BOOT=$(field SECURE_BOOT))"
     [ "$(field BOOT_COUNT)" = "засчитана" ] || err "загрузка не засчитана (systemd-bless-boot)"
     [ "$(field ROOT_FS)" = ext4 ] || err "root не создан при первой загрузке (ROOT_FS=$(field ROOT_FS))"
-    [ "$(field FACTORY_ETC)" = yes ] || err "/etc не заполнен из заготовки"
+    [[ "$(field FACTORY_ETC)" == yes* ]] || err "/etc не сверен с заготовкой для этой версии: $(field FACTORY_ETC)"
     [ "$(field ROOT_LUKS)" = yes ] || err "root не зашифрован (LUKS2)"
     [ "$(field TPM2_TOKEN)" = yes ] || err "ключ root не в TPM2"
     [ "$(field TPM2_PCRS)" = 7 ] || err "ключ TPM2 не привязан к PCR 7 (Secure Boot): $(field TPM2_PCRS)"

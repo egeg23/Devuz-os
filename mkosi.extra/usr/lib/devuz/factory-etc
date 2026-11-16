@@ -1,17 +1,51 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Копирует заготовку /usr/share/factory/etc в /etc, не перезаписывая то,
-# что уже есть (systemd к этому моменту мог создать machine-id и ссылки
-# включённых юнитов). Метка /etc/.devuz-factory-etc — «уже сделано».
+# /etc из заготовки /usr/share/factory/etc (её пишет mkosi.finalize при сборке).
+#
+# Первая загрузка: копируем всё, не перезаписывая того, что systemd уже
+# создал (machine-id, ссылки включённых юнитов).
+#
+# Первая загрузка новой версии: /etc у работающей коробки свой и не
+# обновляется вместе с /usr. Поэтому докладываем только НОВЫЕ файлы
+# заготовки, которых в /etc нет. Существующие не трогаем никогда (это уже
+# настройка этой коробки), ссылки включения юнитов (systemd/system/*) — тоже:
+# иначе вернулся бы юнит, который на коробке выключили. Новые юниты
+# включаются ссылкой в /usr/lib/systemd/system/*.wants, а свои настройки
+# держим в /usr (drop-in'ы), а не в /etc.
+#
+# Метка /etc/.devuz-factory-etc хранит версию, для которой /etc сверен.
 set -euo pipefail
-cp -a --update=none /usr/share/factory/etc/. /etc/
-# Обрыв питания на середине копирования мог оставить обрезанный файл, а
-# --update=none его бы пропустил. Сверяем: что отличается от заготовки и
-# не создано самим systemd при этой загрузке — перезаписать.
+FACTORY=${DEVUZ_FACTORY:-/usr/share/factory/etc}
+ETC=${DEVUZ_ETC:-/etc}
+OSREL=${DEVUZ_OSREL:-/usr/lib/os-release}
+MARK="$ETC/.devuz-factory-etc"
+ver=$(. "$OSREL"; echo "${IMAGE_VERSION:-unknown}")
+
+if [ ! -e "$MARK" ]; then
+    cp -a --update=none "$FACTORY/." "$ETC/"
+    # Обрыв питания на середине копирования мог оставить обрезанный файл, а
+    # --update=none его бы пропустил. Сверяем: что отличается от заготовки и
+    # не создано самим systemd при этой загрузке — перезаписать.
+    while IFS= read -r -d '' f; do
+        rel=${f#"$FACTORY"/}
+        case "$rel" in machine-id|systemd/system/*) continue ;; esac
+        cmp -s "$f" "$ETC/$rel" || cp -a "$f" "$ETC/$rel"
+    done < <(find "$FACTORY" -type f -print0)
+    echo "$ver" >"$MARK.new" && mv "$MARK.new" "$MARK"
+    echo "DEVUZ-FACTORY-ETC /etc заполнен из заготовки ($ver)"
+    exit 0
+fi
+
+[ "$(cat "$MARK" 2>/dev/null)" = "$ver" ] && exit 0
+added=0
 while IFS= read -r -d '' f; do
-    rel=${f#/usr/share/factory/etc/}
+    rel=${f#"$FACTORY"/}
     case "$rel" in machine-id|systemd/system/*) continue ;; esac
-    cmp -s "$f" "/etc/$rel" || cp -a "$f" "/etc/$rel"
-done < <(find /usr/share/factory/etc -type f -print0)
-touch /etc/.devuz-factory-etc
-echo "DEVUZ-FACTORY-ETC /etc заполнен из заготовки"
+    [ -e "$ETC/$rel" ] || [ -L "$ETC/$rel" ] && continue
+    mkdir -p "$(dirname "$ETC/$rel")"
+    cp -a "$f" "$ETC/$rel.devuz-new" && mv "$ETC/$rel.devuz-new" "$ETC/$rel"
+    echo "DEVUZ-FACTORY-ETC новый файл: /etc/$rel"
+    added=$((added + 1))
+done < <(find "$FACTORY" \( -type f -o -type l \) -print0)
+echo "$ver" >"$MARK.new" && mv "$MARK.new" "$MARK"
+echo "DEVUZ-FACTORY-ETC версия $ver: новых файлов в /etc — $added"
