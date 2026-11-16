@@ -349,6 +349,12 @@ jobs:
           errors = []
           if "dracut" in pkgs or "dracut-core" in pkgs:
               errors.append("в образ попал dracut")
+          # Вход по паролю на консоли не нужен и опасен (аудит Б, п. 9): getty
+          # показывает экран «Состояние» без входа. Пакеты, которые дают
+          # login/su/sshd, — не в образ.
+          for bad in ("login", "openssh-server", "sudo"):
+              if bad in pkgs:
+                  errors.append(f"в образ попал пакет {bad} (вход в систему на коробке не нужен)")
           kernel = pkgs.get("linux-image-amd64", "нет")
           pinned = os.environ.get("KERNEL_PINNED")
           if pinned and kernel != pinned:
