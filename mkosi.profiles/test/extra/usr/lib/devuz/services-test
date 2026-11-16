@@ -73,6 +73,14 @@ else
     say "ERROR состояние коробки: «$(head -c 300 /run/devuz/status/box.json 2>&1)»"; fail=1
 fi
 h=$(hostname); [ "$h" = devuz ] && say "HOSTNAME ok: $h" || { say "ERROR имя коробки: $h"; fail=1; }
+# Память под нагрузкой: zram-своп и systemd-oomd следят за ломтём моделей.
+zr=$(swapon --show=NAME,TYPE --noheadings 2>/dev/null | grep -c '/dev/zram' || true)
+oo=$(systemctl show -p ManagedOOMMemoryPressure -p ManagedOOMSwap --value devuz-ai.slice | tr '\n' ' ')
+if [ "$zr" -ge 1 ] && systemctl is-active --quiet systemd-oomd.service && [ "$oo" = "kill kill " ]; then
+    say "MEMORY_GUARD ok: zram-своп есть, systemd-oomd следит за devuz-ai.slice"
+else
+    say "ERROR память под нагрузкой: zram $zr, oomd $(systemctl is-active systemd-oomd.service), $(head -c 300 <<<"$oo")"; fail=1
+fi
 systemctl is-enabled --quiet systemd-timesyncd.service && say "TIMESYNC_ENABLED ok ($(timedatectl show -p Timezone --value))" || { say "ERROR timesyncd не включён"; fail=1; }
 s=$(systemctl show -p Slice --value devuz-svc-postgres.service); [ "$s" = devuz-ui.slice ] && say "UI_SLICE ok" || { say "ERROR PostgreSQL в ломте «$s»"; fail=1; }
 if [ -e "$mark" ]; then

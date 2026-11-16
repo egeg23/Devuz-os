@@ -8,3 +8,8 @@ Description=DevUz: модели ИИ (фон)
 [Slice]
 CPUWeight=50
 IOWeight=50
+# Кончается память — systemd-oomd останавливает модель отсюда (она
+# перезапустится сама, задача в «Ядре» подождёт), а не базу или «Офис».
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=50%
+ManagedOOMSwap=kill
