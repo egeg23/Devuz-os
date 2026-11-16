@@ -81,6 +81,18 @@ if [ "$zr" -ge 1 ] && systemctl is-active --quiet systemd-oomd.service && [ "$oo
 else
     say "ERROR память под нагрузкой: zram $zr, oomd $(systemctl is-active systemd-oomd.service), $(head -c 300 <<<"$oo")"; fail=1
 fi
+# Файрвол: включён, входящее по умолчанию отбрасывается, открыто только
+# нужное (https «Офиса», mDNS, поддержка), пересылки нет. Чужой порт —
+# например, сервер модели :8081, если бы он слушал не 127.0.0.1, — закрыт.
+fw=$(nft list table inet devuz 2>&1)
+if systemctl is-active --quiet devuz-firewall.service && ! systemctl is-enabled --quiet nftables.service 2>/dev/null &&
+   grep -q 'hook input priority filter; policy drop' <<<"$fw" && grep -q 'hook forward priority filter; policy drop' <<<"$fw" &&
+   grep -q 'tcp dport { 80, 443 } accept' <<<"$fw" && grep -q 'udp dport 5353 accept' <<<"$fw" &&
+   ! grep -qE 'dport.*(8081|8090|8100|5432|3493)' <<<"$fw"; then
+    say "FIREWALL ok: входящее — drop, открыты 80/443, mDNS, поддержка"
+else
+    say "ERROR файрвол: $(systemctl is-active devuz-firewall.service) / $(head -c 400 <<<"$fw")"; fail=1
+fi
 systemctl is-enabled --quiet systemd-timesyncd.service && say "TIMESYNC_ENABLED ok ($(timedatectl show -p Timezone --value))" || { say "ERROR timesyncd не включён"; fail=1; }
 s=$(systemctl show -p Slice --value devuz-svc-postgres.service); [ "$s" = devuz-ui.slice ] && say "UI_SLICE ok" || { say "ERROR PostgreSQL в ломте «$s»"; fail=1; }
 if [ -e "$mark" ]; then

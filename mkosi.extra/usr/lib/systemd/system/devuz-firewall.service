@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Файрвол — до того, как поднимется сеть (network-pre.target): в окне между
+# адресом от роутера и стартом служб коробка не стоит открытой.
+[Unit]
+Description=DevUz: файрвол (входящее — только «Офис», mDNS, поддержка)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/share/devuz/firewall.nft
+ExecReload=/usr/sbin/nft -f /usr/share/devuz/firewall.nft
+StandardOutput=journal+console
+
+[Install]
+WantedBy=sysinit.target
