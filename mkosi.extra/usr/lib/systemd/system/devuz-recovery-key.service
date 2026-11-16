@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[Unit]
+Description=DevUz: ключ восстановления диска
+ConditionPathExists=/dev/mapper/root
+ConditionPathExists=!/var/lib/devuz/.recovery-key
+After=local-fs.target devuz-luks-discard.service devuz-factory-etc.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/recovery-key
+# 75 — «не вышло, попробуем в следующий раз»: загрузку из-за этого не ломаем.
+SuccessExitStatus=75
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

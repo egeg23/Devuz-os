@@ -1,0 +1,49 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Ключ восстановления диска — один раз после создания root.
+#
+# Root запечатан в TPM коробки. Замена платы или TPM, сброс TPM, обновление
+# dbx в прошивке, чужие ключи Secure Boot — и TPM ключ не отдаст. Без
+# второго ключа данные не открыть никому. Поэтому сразу после первой
+# загрузки заводим ключ восстановления (systemd-cryptenroll --recovery-key:
+# 64 буквы, вводится с клавиатуры вместо пароля, когда коробка его спросит).
+#
+# Ключ кладём туда, откуда его покажет владельцу «Офис» («Состояние» →
+# «Ключ восстановления», рядом с ключом копий): /var/lib/devuz/recovery-key и
+# копия /etc/devuz/office/recovery-key (0600). На заводе ключ не видят и в
+# образ он не попадает: он свой у каждой коробки и рождается на ней.
+set -eu
+say() { echo "DEVUZ-RECOVERY $*"; }
+state=/var/lib/devuz/recovery-key
+
+dev=""
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] && [ "$(cat "$d/name")" = root ] || continue
+    for s in "$d"/../slaves/*; do dev="/dev/${s##*/}"; done
+done
+[ -b "$dev" ] || { say "ERROR не нашёл раздел под /dev/mapper/root"; exit 75; }
+
+publish() {
+    if [ -d /etc/devuz/office ] && ! cmp -s "$state" /etc/devuz/office/recovery-key; then
+        install -m 600 "$state" /etc/devuz/office/recovery-key
+    fi
+}
+
+if cryptsetup luksDump "$dev" | grep -q 'systemd-recovery'; then
+    # Уже заведён (служба прервалась после записи в заголовок, но до отметки,
+    # или ключ завели руками). Второй ключ не заводим: старый мог уже уйти
+    # владельцу. Нет файла — значит, ключ знает только тот, кто его заводил.
+    [ -s "$state" ] && publish || say "WARN ключ восстановления в заголовке есть, а файла нет — новый не завожу"
+    touch /var/lib/devuz/.recovery-key; say "уже заведён"; exit 0
+fi
+
+umask 077
+mkdir -p /var/lib/devuz
+out=$(systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$dev" 2>/run/devuz-recovery.err) || {
+    say "ERROR не завёлся, повторю при следующей загрузке: $(tail -n 2 /run/devuz-recovery.err)"; exit 75; }
+key=$(grep -oE '([cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}' <<<"$out" | head -n1)
+[ -n "$key" ] || { say "ERROR ключ заведён, но не прочитан из вывода"; exit 75; }
+printf '%s\n' "$key" >"$state.new" && sync "$state.new" && mv "$state.new" "$state"
+publish
+touch /var/lib/devuz/.recovery-key
+say "заведён"  # сам ключ в журнал не пишем
