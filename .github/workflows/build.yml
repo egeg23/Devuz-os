@@ -79,6 +79,11 @@ jobs:
         run: |
           mkosi genkey
           openssl x509 -in mkosi.crt -noout -subject -enddate
+          # Открытая половина ключа подписи политики PCR 11 (тот же ключ, что
+          # Secure Boot): systemd-cryptenroll сам берёт её из /usr/lib/systemd
+          # при перезапечатке TPM (devuz-tpm-reseal). Закрытой в образе нет.
+          mkdir -p "$WORK/keys-tree/usr/lib/systemd"
+          openssl x509 -in mkosi.crt -pubkey -noout >"$WORK/keys-tree/usr/lib/systemd/tpm2-pcr-public-key.pem"
 
       - name: Тестовый ключ подписи обновлений GPG (на лету, никуда не сохраняется)
         run: |
@@ -394,14 +399,14 @@ jobs:
           sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
           exit $rc
 
-      - name: Тест ключей диска (TPM, чужой PCR 7, ключ восстановления)
+      - name: Тест ключей диска (TPM, чужой PCR 7, ключ восстановления, перезапечатка)
         if: env.SABOTAGE == 'none'
         run: |
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=luks EXPECT_VERSION="$DEVUZ_VERSION" LOG=luks.log
           export TEST_TITLE="Тест ключей диска"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in TPM_UNLOCK RECOVERY_ENROLLED LUKS_DISCARD PCR7_CHANGED_TPM_UNLOCK RECOVERY_OPEN; do
+          for k in TPM_UNLOCK RECOVERY_ENROLLED LUKS_DISCARD PCR7_CHANGED_TPM_UNLOCK RECOVERY_OPEN TPM_RESEALED; do
             line=$(grep -m1 -o "DEVUZ-LUKS $k.*" luks.log || true)
             echo "- ${line:-❌ нет DEVUZ-LUKS $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Каждую загрузку: TPM не отдаёт ключ диска (обновление прошивки или dbx) —
+# перезапечатать под текущее состояние (/usr/lib/devuz/tpm-reseal).
+[Unit]
+Description=DevUz: перезапечатать ключ диска в TPM, если нужно
+ConditionPathExists=/dev/mapper/root
+After=local-fs.target devuz-recovery-key.service devuz-luks-discard.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/devuz/tpm-reseal
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

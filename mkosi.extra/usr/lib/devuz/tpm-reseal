@@ -1,0 +1,46 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Перезапечатать ключ диска в TPM, если TPM его больше не отдаёт.
+#
+# Обновилась прошивка или список запрещённых подписей (dbx), сменились ключи
+# Secure Boot, заменили TPM — PCR 7 стал другим, и при загрузке коробка
+# спросила ключ восстановления (docs/recovery-key.md). Root открыт, но без
+# перезапечатки пришлось бы вводить ключ на каждой загрузке. Поэтому при
+# каждой загрузке: TPM отдаёт ключ — ничего не делаем; не отдаёт — заводим
+# слот TPM заново под текущее состояние (тем же ключом восстановления, он
+# лежит на уже открытом диске) и стираем старый.
+#
+# Политика та же, что при создании root (systemd-repart): PCR 7 + подписанная
+# политика PCR 11 — открытый ключ /usr/lib/systemd/tpm2-pcr-public-key.pem
+# systemd-cryptenroll находит сам. Нет его — не перезапечатываем: без PCR 11
+# ключ отдавался бы любому образу с нашей подписью Secure Boot.
+set -u
+say() { echo "DEVUZ-RESEAL $*"; }
+key=/var/lib/devuz/recovery-key
+pub=/usr/lib/systemd/tpm2-pcr-public-key.pem
+
+dev=""
+for d in /sys/block/dm-*/dm; do
+    [ -r "$d/name" ] && [ "$(cat "$d/name")" = root ] || continue
+    for s in "$d"/../slaves/*; do dev="/dev/${s##*/}"; done
+done
+[ -b "$dev" ] || { say "ERROR не нашёл раздел под /dev/mapper/root"; exit 0; }
+
+if cryptsetup open --test-passphrase --token-only "$dev" </dev/null 2>/dev/null; then
+    exit 0 # TPM отдаёт ключ — всё в порядке
+fi
+say "TPM не отдаёт ключ диска (сменилось состояние Secure Boot или TPM) — перезапечатываю"
+[ -s "$key" ] || { say "ERROR нет файла ключа восстановления — перезапечатать может только поддержка"; exit 0; }
+[ -s "$pub" ] || { say "ERROR нет открытого ключа политики PCR 11 — не перезапечатываю"; exit 0; }
+[ -e /dev/tpmrm0 ] || { say "ERROR TPM не найден — ключ придётся вводить при загрузке"; exit 0; }
+
+# Ключ восстановления из файла — без перевода строки (cryptenroll читает файл целиком).
+umask 077
+k=$(mktemp /run/devuz-reseal.XXXXXX); trap 'rm -f "$k"' EXIT
+tr -d '\n' <"$key" >"$k"
+if systemd-cryptenroll --unlock-key-file="$k" --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 "$dev" >/run/devuz-reseal.log 2>&1; then
+    say "перезапечатан (PCR 7 + подписанная политика PCR 11)"
+else
+    say "ERROR не вышло: $(tail -n 2 /run/devuz-reseal.log)"
+fi
+exit 0
