@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Аварийный режим или режим восстановления в initrd (emergency/rescue
+# drop-in'ы рядом). Коробка без человека: строка на экран, по возможности —
+# понятная причина, 2 минуты и перезагрузка.
+# $1 — «аварийный режим» или «режим восстановления».
+echo "DEVUZ-INITRD-EMERGENCY $1 в initrd — перезагрузка через 2 мин"
+# Частая причина на новой коробке: root не создан (systemd-repart при нехватке
+# места выходит без ошибки). Покажем размеры дисков — человеку сразу видно,
+# что диск меньше 8 ГБ.
+if [ ! -e /dev/gpt-auto-root ] && [ ! -e /dev/mapper/root ]; then
+    disks=""
+    for d in /sys/block/*; do
+        n=${d##*/}
+        case "$n" in loop*|ram*|zram*|dm-*|sr*) continue ;; esac
+        [ -r "$d/size" ] || continue
+        read -r sz <"$d/size" || continue
+        gb=$(( sz * 512 / 1000000000 ))
+        disks="$disks $n=${gb}ГБ"
+    done
+    echo "DEVUZ-INITRD-NOROOT раздела root нет: его не удалось создать или найти. Нужен диск от 8 ГБ, диски:${disks:- не найдены}"
+fi
+sleep 120
+systemctl --no-block reboot || { sync; systemctl --force --force reboot; }
