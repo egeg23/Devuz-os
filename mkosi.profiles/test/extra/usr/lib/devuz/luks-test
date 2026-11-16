@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Тест ключей диска (только тестовый образ, режим devuz.test=luks):
-#  1. ключ из TPM открывает root сейчас — заводим ключ восстановления,
-#     разблокируя заголовок через TPM;
+#  1. ключ из TPM открывает root; ключ восстановления уже заведён службой
+#     devuz-recovery-key при первой загрузке (боевой путь);
 #  2. меняем PCR 7 (так меняется состояние Secure Boot, когда в прошивке
 #     чужие ключи) — TPM больше не отдаёт ключ;
 #  3. ключ восстановления открывает root и без TPM.
@@ -19,17 +19,28 @@ done
 [ -b "$dev" ] || { say "ERROR не нашёл раздел под /dev/mapper/root"; say FAIL; exit 1; }
 say "DEVICE $dev"
 
-# 1. TPM открывает заголовок (иначе ключ восстановления не завести).
-out=$(systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$dev" 2>/tmp/enroll.err)
-rkey=$(grep -oE '([cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}' <<<"$out" | head -n1)
-if [ -n "$rkey" ]; then
+# 1. TPM открывает том сам (токен в заголовке), и ключ восстановления уже
+#    заведён службой devuz-recovery-key при первой загрузке — ровно один.
+systemctl start devuz-recovery-key.service 2>/dev/null || true
+if cryptsetup open --test-passphrase --token-only "$dev" </dev/null 2>/tmp/tpm.err; then
     say "TPM_UNLOCK ok"
-    say "RECOVERY_ENROLLED ok"
 else
-    say "ERROR TPM не открыл заголовок или ключ восстановления не заведён:"
-    sed 's/^/  /' /tmp/enroll.err
+    say "ERROR TPM не открывает root:"; sed 's/^/  /' /tmp/tpm.err; fail=1
+fi
+rkey=$(cat /var/lib/devuz/recovery-key 2>/dev/null || true)
+ntok=$(cryptsetup luksDump "$dev" | grep -c 'systemd-recovery' || true)
+if [[ "$rkey" =~ ^([cbdefghijklnrtuv]{8}-){7}[cbdefghijklnrtuv]{8}$ ]] && [ "$ntok" = 1 ] &&
+   [ "$(stat -c %a /var/lib/devuz/recovery-key)" = 600 ] && ! journalctl -b --no-pager | grep -qF "$rkey"; then
+    say "RECOVERY_ENROLLED ok (служба при первой загрузке, один ключ, 0600, не в журнале)"
+else
+    say "ERROR ключ восстановления: файл «${rkey:0:8}…», токенов $ntok, права $(stat -c %a /var/lib/devuz/recovery-key 2>/dev/null)"
+    journalctl -b -u devuz-recovery-key --no-pager -n 5 | sed 's/^/  /'
     fail=1
 fi
+# Повторный запуск не заводит второй ключ.
+rm -f /var/lib/devuz/.recovery-key; /usr/lib/devuz/recovery-key >/dev/null
+[ "$(cryptsetup luksDump "$dev" | grep -c 'systemd-recovery')" = 1 ] && [ "$(cat /var/lib/devuz/recovery-key)" = "$rkey" ] ||
+    { say "ERROR повторный запуск завёл второй ключ или сменил файл"; fail=1; }
 
 # TRIM сквозь LUKS (devuz-luks-discard при первой загрузке, аудит Б).
 if cryptsetup luksDump "$dev" | grep -q 'allow-discards' && systemctl is-enabled --quiet fstrim.timer; then
