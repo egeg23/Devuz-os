@@ -5,7 +5,9 @@
 #     манифестом загружается, сервер модели (llama.cpp) поднимается;
 #  2. приложение с токеном получает ответ модели через «Ядро» (задача chat-real);
 #  3. манифест с неверной подписью, файл с другим хешем, лишний файл в
-#     каталоге модели — сервер модели не стартует.
+#     каталоге модели — сервер модели не стартует;
+#  4. выпуск 2 ставится models-install через <имя>.new и подмену каталога,
+#     пока сервер модели работает; старый выпуск 1 после этого — отказ.
 # Потом — обычная самопроверка.
 set -u
 say() { echo "DEVUZ-MODELS-TEST $*"; }
@@ -107,8 +109,41 @@ bad_extra() {
 }
 bad_extra
 
+# 4. Обновление модели на ходу: выпуск 2 ставится через <имя>.new и подмену
+#    каталога, пока сервер модели работает; потом выпуск 1 — отказ (откат).
+use smollm2-135m
+if systemctl start "$llm"; then
+    stage=/var/lib/devuz/stage-r2
+    rm -rf "$stage"; mkdir -p "$stage"
+    cp -a "$src"/*.gguf "$stage/"; cp -a "$src.r2"/MANIFEST "$src.r2"/MANIFEST.sig "$stage/"
+    out=$(/usr/lib/devuz/models-install "$stage" 2>&1); rc=$?
+    rel=$(cat /var/lib/devuz/models-release/smollm2-135m 2>/dev/null)
+    if [ "$rc" = 0 ] && grep -q '^release: 2$' "$models/smollm2-135m/MANIFEST" && [ "$rel" = 2 ] &&
+       [ ! -e "$models/smollm2-135m.new" ] && systemctl is-active --quiet "$llm"; then
+        if systemctl restart "$llm"; then
+            say "INSTALL_SWAP ok: $(printf '%s\n' "$out" | tail -n1); сервер работал во время подмены, перезапуск на выпуске 2 — ок"
+        else say "ERROR после подмены сервер модели не поднялся"; journalctl -b -u devuz-llm-verify --no-pager -n 20; fail=1; fi
+    else
+        say "ERROR установка выпуска 2: rc=$rc выпуск=$rel $(printf '%s' "$out" | tr '\n' ' ')"; fail=1
+    fi
+    rm -rf "$stage"
+    systemctl stop "$llm"
+    # Старый подписанный манифест (выпуск 1) — и установкой, и в самом каталоге.
+    out=$(/usr/lib/devuz/models-install "$src" 2>&1) && { say "ERROR откат на выпуск 1 принят установкой"; fail=1; }
+    rm -rf "${models:?}/smollm2-135m"; cp -a "$src" "$models/smollm2-135m"; use smollm2-135m
+    if systemctl start "$llm" 2>/dev/null; then say "ERROR сервер модели загрузил старый выпуск 1"; fail=1; systemctl stop "$llm"
+    else
+        why=$(journalctl -b -u devuz-llm-verify --no-pager -o cat | grep -F 'откат: выпуск манифеста 1' | tail -n1)
+        case "$out" in *откат*) inst=1 ;; *) inst=0 ;; esac
+        if [ -n "$why" ] && [ "$inst" = 1 ]; then say "ROLLBACK_REFUSED ok: ${why#DEVUZ-MODELS ERROR }"
+        else say "ERROR откат: установка «${out##*ERROR }», загрузка «${why:-нет причины в журнале}»"; fail=1; fi
+    fi
+else
+    say "ERROR сервер модели не поднялся перед обновлением"; fail=1
+fi
+
 # Убрать за собой: сервер модели выключен, упавшие проверки не числятся.
-rm -f /etc/devuz/llm-model
+rm -f /etc/devuz/llm-model /var/lib/devuz/models-release/smollm2-135m
 systemctl stop "$llm" 2>/dev/null
 systemctl reset-failed devuz-llm-verify.service "$llm" 'devuz-alert@*' 2>/dev/null
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi

@@ -1,8 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Проверить модель перед загрузкой: /var/lib/devuz/models/<имя>/
-#   MANIFEST      — текст: name, version, license, format, и по строке на файл
-#                   «sha256 <хеш> <размер> <файл>»;
+#   MANIFEST      — текст: name, release, version, license, format, и по
+#                   строке на файл «sha256 <хеш> <размер> <файл>»;
+#                   release — номер выпуска манифеста: целое, только растёт
+#                   (например, дата и номер за день: 2026111601);
 #   MANIFEST.sig  — подпись MANIFEST ключом моделей DevUz
 #                   (/usr/lib/devuz/keys/models.gpg, под verity).
 # Подпись верна, имя в манифесте = имя каталога, каждый файл совпал по
@@ -13,42 +15,67 @@
 # штамп (манифест, подпись и inode/размер/время изменения каждого файла):
 # пока ничего не менялось и штампу меньше 30 дней — хеши не пересчитываем.
 # Подпись проверяется всегда.
+# Защита от отката: коробка помнит последний принятый номер выпуска каждой
+# модели (/var/lib/devuz/models-release/<имя>). Манифест с номером меньше —
+# отказ (старый подписанный манифест не годится), такой же — можно (повтор).
+# Номер запоминается после удачной проверки при загрузке модели (не --check,
+# не --dir); models-install запоминает его после подмены каталога.
 #   models-verify            — модель из /etc/devuz/llm-model;
 #   models-verify <имя>      — эта модель;
 #   models-verify --check <имя> — только проверить, ничего не писать;
 #   models-verify --stt [<имя>] — модель распознавания речи (whisper.cpp,
 #                  файл весов .bin) из /etc/devuz/stt-model; настройки сервера
-#                  речи — в /run/devuz/stt-env/stt.env.
+#                  речи — в /run/devuz/stt-env/stt.env;
+#   models-verify --dir <каталог> <имя> — проверить другой каталог как модель
+#                  <имя> (так models-install проверяет <имя>.new до подмены):
+#                  пишет только штамп, номер выпуска и настройки сервера — нет.
+# Пути можно подменить переменными DEVUZ_MODELS_* — только для проверки
+# скрипта на раннере (tests/models-safe.sh); службы их не задают.
 set -u
 shopt -s dotglob nullglob
-root=/var/lib/devuz/models
-stamps=/var/lib/devuz/models-verified
-keyring=/usr/lib/devuz/keys/models.gpg
+root=${DEVUZ_MODELS_ROOT:-/var/lib/devuz/models}
+stamps=${DEVUZ_MODELS_STAMPS:-/var/lib/devuz/models-verified}
+releases=${DEVUZ_MODELS_RELEASES:-/var/lib/devuz/models-release}
+keyring=${DEVUZ_MODELS_KEYRING:-/usr/lib/devuz/keys/models.gpg}
 fail() { echo "DEVUZ-MODELS ERROR ${name:-?}: $*"; exit 78; }
 
-write=1 kind=llm
+write=1 kind=llm dir=""
 while :; do
     case "${1:-}" in
         --check) write=0; shift ;;
         --stt) kind=stt; shift ;;
+        --dir) dir=${2:-}; [ -n "$dir" ] || fail "--dir без каталога"; shift 2 ;;
         *) break ;;
     esac
 done
 if [ "$kind" = stt ]; then cfg=/etc/devuz/stt-model ext=bin; else cfg=/etc/devuz/llm-model ext=gguf; fi
 name=${1:-$(cat "$cfg" 2>/dev/null || true)}
 [[ "$name" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail "плохое имя модели «$name»"
-dir=$root/$name
+staged=0
+if [ -n "$dir" ]; then staged=1; else dir=$root/$name; fi
 [ -f "$dir/MANIFEST" ] && [ -f "$dir/MANIFEST.sig" ] || fail "нет MANIFEST или MANIFEST.sig в $dir"
 [ -s "$keyring" ] || fail "нет ключа моделей $keyring"
 
-gpgv --keyring "$keyring" "$dir/MANIFEST.sig" "$dir/MANIFEST" 2>/run/devuz-models-gpgv.$$ ||
-    { r=$(grep -m1 -E 'BAD|NO_PUBKEY|bad|not|No public' /run/devuz-models-gpgv.$$); rm -f /run/devuz-models-gpgv.$$; fail "подпись манифеста неверна (${r:-gpgv отказал})"; }
-rm -f /run/devuz-models-gpgv.$$
+err=$(gpgv --keyring "$keyring" "$dir/MANIFEST.sig" "$dir/MANIFEST" 2>&1 >/dev/null) ||
+    { r=$(printf '%s\n' "$err" | grep -m1 -E 'BAD|NO_PUBKEY|bad|not|No public'); fail "подпись манифеста неверна (${r:-gpgv отказал})"; }
+
+# Номер выпуска — до хешей: откат отвергаем сразу, не читая десятки ГБ.
+rel=$(sed -n 's/^release:[[:space:]]*//p' "$dir/MANIFEST")
+[ "$(grep -c '^release:' "$dir/MANIFEST")" = 1 ] || fail "в манифесте должна быть ровно одна строка release:"
+[[ "$rel" =~ ^[0-9]{1,18}$ ]] || fail "плохой номер выпуска «$rel» (нужно целое до 18 цифр)"
+have=0
+if [ -f "$releases/$name" ]; then
+    have=$(cat "$releases/$name")
+    [[ "$have" =~ ^[0-9]{1,18}$ ]] || fail "запись выпуска $releases/$name испорчена («$have») — проверить руками"
+fi
+(( 10#$rel >= 10#$have )) || fail "откат: выпуск манифеста $rel меньше уже принятого $have"
 
 # Штамп: что именно проверено. Меняется любой файл (даже touch) — штамп не
 # совпадёт, и хеши считаются заново.
 stamp_of() {
-    { cat "$dir/MANIFEST" "$dir/MANIFEST.sig"; stat -c '%n %i %s %Y %Z' "$dir"/* 2>/dev/null; } | sha256sum | cut -d' ' -f1
+    # Имена файлов без пути: models-install переименовывает каталог
+    # (<имя>.new → <имя>), файлы и их inode при этом те же — штамп годен.
+    { cat "$dir/MANIFEST" "$dir/MANIFEST.sig"; ( cd "$dir" && stat -c '%n %i %s %Y %Z' -- * 2>/dev/null ); } | sha256sum | cut -d' ' -f1
 }
 want_stamp=$(stamp_of)
 fresh=0
@@ -66,7 +93,7 @@ while read -r k a b c rest || [ -n "${k:-}" ]; do
     case "$k" in
         ''|'#'*) ;;
         name:) mname=$a ;;
-        version:|license:|format:) ;;
+        release:|version:|license:|format:) ;;
         sha256)
             [[ "$a" =~ ^[0-9a-f]{64}$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[A-Za-z0-9._-]+$ && -z "$rest" ]] ||
                 fail "плохая строка файла в манифесте: $k $a $b $c $rest"
@@ -94,6 +121,14 @@ else
     [ "$write" = 0 ] || { mkdir -p "$stamps"; printf '%s\n' "$want_stamp" >"$stamps/$name"; }
     echo "DEVUZ-MODELS $name: подпись и хеши верны"
 fi
+echo "DEVUZ-MODELS $name: выпуск $rel (принятый раньше: $have)"
+# Запомнить номер выпуска (только больше прежнего): после этого более старый
+# подписанный манифест этой модели не примется.
+if [ "$write" = 1 ] && [ "$staged" = 0 ] && (( 10#$rel > 10#$have )); then
+    mkdir -p "$releases"
+    printf '%s\n' "$rel" >"$releases/$name.tmp" && mv -f "$releases/$name.tmp" "$releases/$name"
+fi
+[ "$staged" = 1 ] && exit 0
 if [ "$write" = 1 ] && [ "$kind" = stt ]; then
     # Серверу речи — только путь к весам: ключа у whisper-server нет, к нему
     # ходят через сокет, который видит только «Ядро».
