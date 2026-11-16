@@ -57,7 +57,11 @@ elif [ "$rc" -ne 0 ]; then
     err "mkosi vm завершился с кодом $rc"
 fi
 
-if grep -qiE 'emergency mode|Reached target .*Emergency|emergency\.target' "$LOG"; then
+# После загрузки systemd уже не печатает «Reached target…» на консоль, а наши
+# drop-in'ы заменяют «You are in emergency mode» своей строкой: аварийный
+# режим основной системы — DEVUZ-EMERGENCY (reboot-guard), initrd —
+# DEVUZ-INITRD-EMERGENCY. Ищем и их.
+if grep -qiE 'emergency mode|Reached target .*Emergency|emergency\.target|DEVUZ-(INITRD-)?EMERGENCY' "$LOG"; then
     err "система ушла в аварийный режим (emergency)"
 fi
 if [ "${ALLOW_FAILED_START:-}" != 1 ] && grep -qE 'Failed to start' "$LOG"; then
