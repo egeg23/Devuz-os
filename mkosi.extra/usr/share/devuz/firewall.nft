@@ -1,0 +1,42 @@
+#!/usr/sbin/nft -f
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Файрвол коробки: входящее — только то, ради чего коробка стоит в сети
+# офиса. Всё остальное отбрасывается. Службы и так слушают 127.0.0.1
+# («Ядро», «Офис», модели, PostgreSQL — сокеты), файрвол — второй замок на
+# случай, если новая служба или чужое приложение из магазина откроет порт
+# наружу. Свою таблицу кладём отдельно: Tailscale (канал поддержки) пишет в
+# свои, а отброшенный в любой таблице пакет отброшен окончательно — поэтому
+# его интерфейс разрешён и здесь.
+#
+# Новый вход снаружи — строкой сюда и в тест (services-test), с причиной.
+destroy table inet devuz
+table inet devuz {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+        # IPv6 без ICMPv6 не работает (поиск соседей, RA); пинг — с пределом.
+        # 58 — ICMPv6; числом: в образе нет /etc/protocols, имя nft не разрешит.
+        meta l4proto 58 accept
+        icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+        icmp type echo-request limit rate 10/second accept
+        # Адрес от роутера офиса (ответы DHCP).
+        udp sport 67 udp dport 68 accept
+        ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+        # Имя коробки в сети офиса (mDNS): devuz.local.
+        udp dport 5353 accept
+        # «Офис» в сети офиса — Caddy (https, http → https).
+        tcp dport { 80, 443 } accept
+        # Канал поддержки (Tailscale): сам интерфейс и прямые соединения.
+        # Кто и куда по нему ходит, решают правила сервера Headscale.
+        iifname "tailscale0" accept
+        udp dport 41641 accept
+        limit rate 5/minute log prefix "DEVUZ-FW drop: " level info
+    }
+    # Коробка не роутер: пересылать между сетями нечего (контейнеры —
+    # Network=host или none).
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}
