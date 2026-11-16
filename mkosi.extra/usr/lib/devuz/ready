@@ -5,3 +5,6 @@ set -eu
 . /usr/lib/os-release
 up=$(cut -d' ' -f1 /proc/uptime)
 echo "DEVUZ-READY ${IMAGE_VERSION:-unknown} ${BUILD_ID:-unknown} uptime=${up}s"
+# Удачная загрузка — счёт неудач подряд в ноль (reboot-guard). Не вышло
+# записать — готовность от этого не страдает.
+/usr/lib/devuz/reboot-guard ok || true

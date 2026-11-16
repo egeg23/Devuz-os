@@ -1,0 +1,63 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Перезагрузки без круга.
+#
+#   reboot-guard fail <откуда>  — загрузка не удалась: +1 к счёту, пауза, перезагрузка
+#   reboot-guard ok             — загрузка удалась (devuz-ready): счёт в ноль
+#
+# Аварийный режим и режим восстановления перезагружают коробку. Новая версия
+# так получает 3 попытки, потом systemd-boot возвращает прошлую. Но если
+# плоха и прошлая (сломан диск, умерла плата памяти), коробка перезагружалась
+# бы каждые 2 минуты вечно: журнал и SSD изнашиваются, на экране ничего не
+# успеть прочитать. Поэтому счёт неудачных загрузок подряд — в переменной
+# EFI (живёт и при сломанном диске), и с 4-й неудачи паузы растут вдвое:
+# 4, 8, 16 … до 60 минут. Первые три — 2 минуты, как раньше: откат версии
+# не замедляется. Удачная загрузка обнуляет счёт (пишем, только если он не
+# ноль — память прошивки не любит частых записей).
+set -u
+GUID=3a7c5f2e-9b1d-4e8a-a6c4-0d5e7f9b2c11
+VAR=${DEVUZ_GUARD_VAR:-/sys/firmware/efi/efivars/DevuzFailedBoots-$GUID}
+FILE=${DEVUZ_GUARD_FILE:-/var/lib/devuz/failed-boots}   # запасной путь без EFI
+FAST=3 BASE=120 MAX=3600
+
+get() {
+    local n=""
+    if [ -r "$VAR" ]; then n=$(od -An -j4 -N4 -tu4 "$VAR" 2>/dev/null | tr -d ' ')
+    elif [ -r "$FILE" ]; then n=$(cat "$FILE" 2>/dev/null); fi
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+put() {
+    local n=$1 b
+    # Переменная EFI: 4 байта атрибутов (NV|BS|RT = 7), потом число LE32.
+    if [ -d "$(dirname "$VAR")" ]; then
+        b=$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((n & 255)) $((n >> 8 & 255)) $((n >> 16 & 255)) $((n >> 24 & 255)))
+        [ -e "$VAR" ] && chattr -i "$VAR" 2>/dev/null
+        if printf "\\x07\\x00\\x00\\x00$b" >"$VAR" 2>/dev/null; then return 0; fi
+    fi
+    mkdir -p "$(dirname "$FILE")" 2>/dev/null && echo "$n" >"$FILE" 2>/dev/null
+}
+# Пауза перед n-й перезагрузкой подряд.
+delay() {
+    local n=$1 d=$BASE
+    if [ "$n" -gt "$FAST" ]; then
+        d=$((BASE << (n - FAST)))
+        [ "$n" -gt 20 ] || [ "$d" -gt "$MAX" ] && d=$MAX
+    fi
+    echo "$d"
+}
+
+case "${1:-}" in
+ok)
+    [ "$(get)" = 0 ] || { put 0; echo "DEVUZ-BOOT-GUARD загрузка удалась, счёт неудач обнулён"; }
+    ;;
+fail)
+    n=$(( $(get) + 1 )); put "$n"; d=$(delay "$n")
+    echo "DEVUZ-EMERGENCY ${2:-сбой} — неудачная загрузка подряд №$n, перезагрузка через $((d / 60)) мин"
+    [ "$n" -gt "$FAST" ] && echo "DEVUZ-EMERGENCY прошлая версия тоже не загружается — паузы растут, нужен человек (поддержка DevUz)"
+    [ -n "${DEVUZ_GUARD_DRY:-}" ] && { echo "DRY delay=$d"; exit 0; }
+    sleep "$d"
+    systemctl --no-block reboot || { echo "DEVUZ-EMERGENCY обычная перезагрузка не прошла — принудительная"; sync; systemctl --force --force reboot; }
+    ;;
+get) get ;;
+*) echo "reboot-guard ok | fail <откуда> | get" >&2; exit 2 ;;
+esac
