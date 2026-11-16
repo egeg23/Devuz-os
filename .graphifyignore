@@ -1,0 +1,4 @@
+# Карта graphify: только наш код.
+.claude/
+graphify-out/
+docs/

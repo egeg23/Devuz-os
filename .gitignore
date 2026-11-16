@@ -18,3 +18,4 @@ mkosi.local.conf
 *.xz
 mkosi.packages/
 __pycache__/
+graphify-out/
