@@ -6,6 +6,7 @@
 #  2. задача не из прав приложения — 403;
 #  3. повысить себе приоритет нельзя;
 #  4. очередь: живой запрос обгоняет ночной; полная очередь — сразу 429;
+#     ночной, прождавший age_s, обгоняет свежий staff (старение), но не live;
 #  5. модель молчит — 504 через timeout_s; обрыв ответа — клиент не висит;
 #     брошенный в очереди запрос до модели не доходит;
 #  6. в учёте нет текста запросов.
@@ -88,6 +89,25 @@ else
     say "ERROR очередь: живой ${oC:-?}, ночной ${oB:-?}"; fail=1
 fi
 [ "$d" = 429 ] && grep -qi '^retry-after:' /tmp/core.Dh && say "QUEUE_FULL_429 ok" || { say "ERROR полная очередь: $d $(cat /tmp/core.D)"; fail=1; }
+
+#    Старение (age_s 1 с в тестовой таблице): модель занята staff A на 2 с;
+#    ночной B встаёт сразу, свежий staff C — через 1,5 с. К моменту выбора B
+#    ждёт больше секунды и поднялся до staff — идёт раньше C. Что старение не
+#    обгоняет live, видно выше: в QUEUE ночной B тоже успел постареть.
+ask "$t_staff" "sleep:2 A" >/dev/null & a=$!
+sleep 0.3
+curl -s -m 15 -o /tmp/core.gB -H "authorization: Bearer $t_night" -H 'content-type: application/json' \
+    -d '{"model":"chat","messages":[{"role":"user","content":"B"}]}' "$api/chat/completions" & b=$!
+sleep 1.2
+curl -s -m 15 -o /tmp/core.gC -H "authorization: Bearer $t_staff" -H 'content-type: application/json' \
+    -d '{"model":"chat","messages":[{"role":"user","content":"C"}]}' "$api/chat/completions" & c=$!
+wait $a $b $c
+oB=$(grep -o 'order=[0-9]*' /tmp/core.gB | cut -d= -f2); oC=$(grep -o 'order=[0-9]*' /tmp/core.gC | cut -d= -f2)
+if [ -n "$oB" ] && [ -n "$oC" ] && [ "$oB" -lt "$oC" ]; then
+    say "AGING ok: прождавший ночной обработан $oB-м, свежий staff $oC-м"
+else
+    say "ERROR старение: ночной ${oB:-?}, staff ${oC:-?} $(cat /tmp/core.gB /tmp/core.gC)"; fail=1
+fi
 
 #    Модель занята дольше max_wait_s (3 с в тестовой таблице) — ждущий
 #    получает 503 с Retry-After, а не висит.

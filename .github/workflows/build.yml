@@ -53,6 +53,9 @@ jobs:
       - name: Службы включены ссылками в /usr (секунды)
         run: tests/unit-links.sh
 
+      - name: Очередь «Ядра» — старение приоритета (секунды)
+        run: node --test tests/core-queue.test.js
+
       - name: Установить mkosi v27.1
         uses: systemd/mkosi@ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b # v27.1
 
@@ -620,13 +623,13 @@ jobs:
           grep -q 'DEVUZ-STT-TEST OK' stt.log || { echo "::error::тест речи не прошёл"; rc=1; grep -E 'DEVUZ-STT-TEST ERROR' stt.log | head; }
           exit $rc
 
-      - name: Тест «Ядра» (токены, права, учёт, очередь)
+      - name: Тест «Ядра» (токены, права, учёт, очередь, старение)
         if: env.SABOTAGE == 'none'
         run: |
           export MKOSI_ARGS="$MKOSI_DIRS --profile=test --image-version=$DEVUZ_VERSION"
           export TEST_CRED=core EXPECT_VERSION="$DEVUZ_VERSION" LOG=core.log TEST_TITLE="Тест «Ядра»"
           rc=0; tests/boot-test.sh || rc=$?
-          for k in NO_TOKEN_401 CHAT ANTHROPIC USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE QUEUE_FULL_429 QUEUE_WAIT_503 TIMEOUT_504 ABORT GONE_SKIPPED USAGE_NO_TEXT BOX_CLASS; do
+          for k in NO_TOKEN_401 CHAT ANTHROPIC USAGE FORBIDDEN_403 NO_PRIORITY_RAISE QUEUE QUEUE_FULL_429 AGING QUEUE_WAIT_503 TIMEOUT_504 ABORT GONE_SKIPPED USAGE_NO_TEXT BOX_CLASS; do
             line=$(grep -m1 -o "DEVUZ-CORE-TEST $k .*" core.log || true)
             echo "- ${line:-❌ нет DEVUZ-CORE-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1

@@ -17,6 +17,9 @@
 //   {"token_sha256": "...", "tasks": ["chat"], "priority": "staff"}
 // Приоритеты очереди: live > chat > staff > night. Приложение может только
 // понизить свой приоритет (заголовок X-DevUz-Priority), но не повысить.
+// Старение (age_s бэкенда, по умолчанию 60 с): кто ждёт дольше, поднимается
+// на ступень за каждые age_s, но не выше chat — ночные задачи днём не
+// голодают, а live всё равно идёт первым (core/queue.js).
 // Очередь на бэкенд ограничена (max_queue): лишний запрос сразу получает 429
 // с Retry-After, а не ждёт бесконечно — коробка не «тормозит у всех».
 // Учёт: /var/lib/devuz/core/usage-ГГГГ-ММ-ДД.jsonl — кто, задача, токены,
@@ -32,6 +35,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const anthropic = require(path.join(__dirname, "anthropic.js"));
+const pq = require(path.join(__dirname, "queue.js"));
 
 const TASKS_ETC = "/etc/devuz/core/tasks.json";
 const TASKS_USR_DIR = "/usr/share/devuz/core";
@@ -59,8 +63,8 @@ function checkTasks(t) {
     // Сокет вместо адреса — для серверов без ключа (речь): к ним ходит только «Ядро».
     if (b.socket !== undefined && (typeof b.socket !== "string" || !/^\/run\/devuz\/[A-Za-z0-9._/-]+\.sock$/.test(b.socket) || b.socket.includes(".."))) throw new Error(`бэкенд «${name}»: socket — путь /run/devuz/….sock`);
     const int = (v, d, min) => (v === undefined ? d : Number.isInteger(v) && v >= min ? v : NaN);
-    const be = { url: b.url.replace(/\/+$/, ""), socket: b.socket || null, concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000, keyFile: typeof b.key_file === "string" ? b.key_file : null };
-    if ([be.concurrency, be.maxQueue, be.timeoutMs, be.maxWaitMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s, max_wait_s — целые числа`);
+    const be = { url: b.url.replace(/\/+$/, ""), socket: b.socket || null, concurrency: int(b.concurrency, 1, 1), maxQueue: int(b.max_queue, 32, 0), timeoutMs: int(b.timeout_s, 120, 1) * 1000, maxWaitMs: int(b.max_wait_s, 300, 1) * 1000, ageMs: int(b.age_s, 60, 0) * 1000, keyFile: typeof b.key_file === "string" ? b.key_file : null };
+    if ([be.concurrency, be.maxQueue, be.timeoutMs, be.maxWaitMs, be.ageMs].some(Number.isNaN)) throw new Error(`бэкенд «${name}»: concurrency, max_queue, timeout_s, max_wait_s, age_s — целые числа`);
     backends.set(name, be);
   }
   const tasks = new Map();
@@ -145,7 +149,12 @@ function pump(name) {
   const q = queue(name);
   const be = TASKS.backends.get(name);
   const limit = be ? be.concurrency : 1;
-  while (q.running < limit && q.waiting.length) { q.running++; const w = q.waiting.shift(); clearTimeout(w.timer); w.resolve(true); }
+  const ageMs = be ? be.ageMs : 0;
+  while (q.running < limit && q.waiting.length) {
+    // Порядок считаем в момент выбора: ступень зависит от того, сколько ждали.
+    const [w] = q.waiting.splice(pq.pick(q.waiting, Date.now(), ageMs), 1);
+    q.running++; clearTimeout(w.timer); w.resolve(true);
+  }
 }
 // Встать в очередь. null — очередь полна (ответить 429). w.ready даёт true —
 // очередь дошла, false — ждали дольше max_wait_s (ответить 503, а не висеть:
@@ -158,7 +167,6 @@ function enqueue(name, prio) {
   w.ready = new Promise((resolve) => { w.resolve = resolve; });
   w.timer = setTimeout(() => { cancel(name, w); w.resolve(false); }, be.maxWaitMs);
   q.waiting.push(w);
-  q.waiting.sort((a, b) => a.rank - b.rank || (a.seq < b.seq ? -1 : 1));
   pump(name);
   return w;
 }
