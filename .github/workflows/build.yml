@@ -292,8 +292,10 @@ jobs:
           # Аварийный режим в initrd перезагружает (mkosi.initrd.extra): правило внутри initrd UKI.
           objcopy -O binary --only-section=.initrd "$uki" "$WORK/prod.initrd"
           { zstd -dcq "$WORK/prod.initrd" 2>/dev/null || xz -dcq "$WORK/prod.initrd" 2>/dev/null || cat "$WORK/prod.initrd"; } >"$WORK/prod.initrd.cpio"
-          if grep -qaF 'DEVUZ-INITRD-EMERGENCY аварийный режим в initrd' "$WORK/prod.initrd.cpio"; then
-            echo "- initrd: аварийный режим перезагружает, а не ждёт Enter" >>"$GITHUB_STEP_SUMMARY"
+          if grep -qaF 'DEVUZ-INITRD-EMERGENCY $1 в initrd' "$WORK/prod.initrd.cpio" &&
+             grep -qaF 'DEVUZ-INITRD-NOROOT' "$WORK/prod.initrd.cpio" &&
+             grep -qaF 'initrd-emergency "аварийный режим"' "$WORK/prod.initrd.cpio"; then
+            echo "- initrd: аварийный режим перезагружает, а не ждёт Enter; без root — строка с размерами дисков" >>"$GITHUB_STEP_SUMMARY"
           else
             echo "::error::в initrd нет правила аварийного режима (mkosi.initrd.extra)"; rc=1
           fi
