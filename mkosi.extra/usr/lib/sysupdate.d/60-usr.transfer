@@ -10,7 +10,10 @@ Type=url-file
 # Сервер обновлений DevUz ещё не поднят (.invalid — заведомо несуществующий
 # адрес). Тест в Actions подменяет адрес через /etc/sysupdate.d.
 Path=https://updates.devuz.invalid/os/
-MatchPattern=devuz_@v_@u.usr.raw
+# Сжатый (zstd) — основной путь: systemd-pull распаковывает сам по заголовку.
+# Несжатый — запасной, если сервер отдаёт без сжатия.
+MatchPattern=devuz_@v_@u.usr.raw.zst \
+             devuz_@v_@u.usr.raw
 
 [Target]
 Type=partition

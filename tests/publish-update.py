@@ -10,6 +10,11 @@ devuz_<версия>.efi), и пишет SHA256SUMS.
 UUID разделов нужны в именах: systemd находит /usr по UUID, выведенным из
 usrhash=, и sysupdate должен создать разделы ровно с такими UUID.
 
+Раздел usr публикуется сжатым (zstd, «.raw.zst»): erofs в образе не сжат,
+и обновление по интернету клиента становится в разы меньше. systemd-pull
+сам узнаёт сжатие по заголовку файла и распаковывает при записи в раздел;
+хеш в SHA256SUMS — сжатого файла (его и проверяет sysupdate).
+
 Запуск: publish-update.py <каталог вывода mkosi> <версия> <каталог сервера>
 """
 import hashlib
@@ -40,7 +45,12 @@ def main() -> int:
             continue
         src = out / f"devuz_{version}.{kind[0]}.raw"
         dst = serve / f"devuz_{version}_{p['uuid'].lower()}.{kind[0]}.raw"
-        os.link(src, dst) if src.stat().st_dev == serve.stat().st_dev else dst.write_bytes(src.read_bytes())
+        if kind[0] == "usr":
+            dst = dst.with_name(dst.name + ".zst")
+            subprocess.run(["zstd", "-q", "-T0", "-12", "-f", "-o", str(dst), str(src)], check=True)
+            print(f"{src.name}: {src.stat().st_size / 2**20:.1f} МиБ → сжатый {dst.stat().st_size / 2**20:.1f} МиБ")
+        else:
+            os.link(src, dst) if src.stat().st_dev == serve.stat().st_dev else dst.write_bytes(src.read_bytes())
         published.append(dst)
 
     if len(published) != 3:

@@ -392,6 +392,12 @@ jobs:
           fi
           echo "- запросы к серверу обновлений:" >>"$GITHUB_STEP_SUMMARY"
           sed 's/^/    /' "$WORK/http-next.log" >>"$GITHUB_STEP_SUMMARY"
+          # Раздел usr скачан сжатым (zstd) и распакован при записи.
+          if grep -q 'GET /devuz_[^ ]*\.usr\.raw\.zst HTTP[^"]*" 200' "$WORK/http-next.log"; then
+            echo "- раздел usr скачан сжатым: $(ls -l --block-size=M "$WORK"/serve-next/*.usr.raw.zst | awk '{print $5}') вместо $(ls -l --block-size=M "$WORK"/output-next/*.usr.raw | awk '{print $5}')" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::раздел usr не скачан сжатым (.usr.raw.zst)"; rc=1
+          fi
           exit $rc
 
       - name: Тест ключей диска (TPM, чужой PCR 7, ключ восстановления)
