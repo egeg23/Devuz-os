@@ -100,6 +100,8 @@
 
 ## Грабли, на которые уже наступили
 
+- В образе нет `/etc/protocols` и `/etc/services` (пакета netbase): в правилах nft — только числа (`meta l4proto 58`, а не `ipv6-icmp`), иначе «Could not resolve protocol name». Проверка `nft -c` на раннере этого не поймает — у раннера файлы есть.
+
 - mkosi v27.1: `--console=read-only` требует `systemd-pty-forward` (нет в systemd 257) → тест на `--console=native`.
 - mkosi v27.1: `+&c` (счётчик попыток в имени UKI) есть в man, нет в коде → `+3` пишем в `UnifiedKernelImageFormat=` сами.
 - systemd 257 в initrd сам не находит `/usr` без verity → с verity работает по `usrhash=`.
