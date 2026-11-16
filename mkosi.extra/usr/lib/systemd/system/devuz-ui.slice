@@ -9,3 +9,5 @@ Description=DevUz: интерфейс и данные (приоритет)
 CPUWeight=1000
 IOWeight=1000
 MemoryLow=1G
+# systemd-oomd выбирает этих в последнюю очередь.
+ManagedOOMPreference=avoid
