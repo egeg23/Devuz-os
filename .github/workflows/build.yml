@@ -313,6 +313,19 @@ jobs:
             fi
           done
           echo "Проверено тестовых имён: $(wc -w <<<"$names")"
+          # На ESP — только systemd-boot и UKI: неподписанного ядра пакета Debian нет (mkosi.finalize).
+          command -v mdir >/dev/null || { sudo apt-get update -qq >/dev/null; sudo apt-get install -y -qq mtools >/dev/null; }
+          img="$WORK/output-prod/devuz_$DEVUZ_VERSION.raw"
+          off=$(sfdisk --json "$img" | python3 -c 'import json,sys; p=[x for x in json.load(sys.stdin)["partitiontable"]["partitions"] if x["type"].upper()=="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"][0]; print(p["start"]*512)')
+          esp=$(MTOOLS_SKIP_CHECK=1 mdir -i "$img@@$off" -/ -b :: 2>&1 || true)
+          echo "ESP: $(wc -l <<<"$esp") путей"
+          if grep -qiE 'vmlinuz|System\.map|/config-' <<<"$esp"; then
+            echo "::error::на ESP неподписанное ядро: $(grep -iE 'vmlinuz|System\.map|/config-' <<<"$esp" | head -3 | tr '\n' ' ')"; rc=1
+          elif ! grep -qiE '\.efi$' <<<"$esp"; then
+            echo "::error::не удалось прочитать ESP: $(head -c 300 <<<"$esp")"; rc=1
+          else
+            echo "- ESP: только systemd-boot и UKI, без неподписанного ядра" >>"$GITHUB_STEP_SUMMARY"
+          fi
           ! grep -qaF 'SmolLM2-135M' "$WORK/output-prod/devuz_$DEVUZ_VERSION.raw" ||
             { echo "::error::в боевом образе тестовая модель"; rc=1; }
           # И обратная проверка: тестовый образ правда другой.
