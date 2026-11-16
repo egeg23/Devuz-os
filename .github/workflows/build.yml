@@ -281,6 +281,14 @@ jobs:
           echo "Строка ядра боевого UKI: $(tr -d '\0' <"$WORK/prod.cmdline")"
           grep -qw 'systemd.import_credentials=no' "$WORK/prod.cmdline" ||
             { echo "::error::в боевом UKI нет systemd.import_credentials=no"; rc=1; }
+          # Аварийный режим в initrd перезагружает (mkosi.initrd.extra): правило внутри initrd UKI.
+          objcopy -O binary --only-section=.initrd "$uki" "$WORK/prod.initrd"
+          { zstd -dcq "$WORK/prod.initrd" 2>/dev/null || xz -dcq "$WORK/prod.initrd" 2>/dev/null || cat "$WORK/prod.initrd"; } >"$WORK/prod.initrd.cpio"
+          if grep -qaF 'DEVUZ-INITRD-EMERGENCY аварийный режим в initrd' "$WORK/prod.initrd.cpio"; then
+            echo "- initrd: аварийный режим перезагружает, а не ждёт Enter" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::в initrd нет правила аварийного режима (mkosi.initrd.extra)"; rc=1
+          fi
           # Имена всех тестовых программ и юнитов (их список — из профиля test)
           # плюс строки тестов. Положительный контроль: в тестовом образе каждое
           # имя находится — иначе grep ничего не доказывает (например, если
