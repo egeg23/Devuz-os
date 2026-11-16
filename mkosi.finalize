@@ -11,3 +11,20 @@ cp -a "$BUILDROOT/etc" "$factory"
 # machine-id у каждой коробки свой — systemd создаст его сам.
 rm -f "$factory/machine-id"
 echo "Заготовка /etc: $(find "$factory" -mindepth 1 | wc -l) файлов и каталогов"
+
+# ESP собирается из /boot целиком (mkosi.repart/10-esp.conf: CopyFiles=/boot).
+# Пакет ядра Debian кладёт туда vmlinuz, config и System.map: на ESP это
+# неподписанное ядро (~14 МБ мусора и лишний повод для атаки — загрузить его
+# мимо UKI). Грузимся только UKI, его ядро mkosi берёт из
+# /usr/lib/modules/<версия>/vmlinuz. Удаляем из /boot, только если копия
+# ядра в /usr/lib/modules — настоящий файл, а не ссылка на /boot.
+for k in "$BUILDROOT"/boot/vmlinuz-*; do
+    [ -e "$k" ] || continue
+    v=${k##*/vmlinuz-}
+    if [ -f "$BUILDROOT/usr/lib/modules/$v/vmlinuz" ] && [ ! -L "$BUILDROOT/usr/lib/modules/$v/vmlinuz" ]; then
+        rm -f "$k" "$BUILDROOT/boot/config-$v" "$BUILDROOT/boot/System.map-$v" "$BUILDROOT/boot/initrd.img-$v"
+        echo "ESP: убрано неподписанное ядро $v из /boot"
+    else
+        echo "ESP: /usr/lib/modules/$v/vmlinuz не файл — /boot/vmlinuz-$v оставляю" >&2
+    fi
+done
