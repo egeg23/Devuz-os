@@ -73,5 +73,22 @@ else
     fail=1
 fi
 
+# 4. Перезапечатка (как после обновления dbx): PCR 7 всё ещё «чужой» — служба
+#    заводит слот TPM заново ключом восстановления, и TPM снова открывает сам.
+#    Политика прежняя (PCR 7 + подписанная PCR 11), слот TPM — один.
+/usr/lib/devuz/tpm-reseal
+dump=$(cryptsetup luksDump --dump-json-metadata "$dev" | tr -d ' \n')
+if cryptsetup open --test-passphrase --token-only "$dev" </dev/null 2>/tmp/reseal.err &&
+   [ "$(grep -o '"type":"systemd-tpm2"' <<<"$dump" | wc -l)" = 1 ] && grep -qE '"tpm2(_|-)pubkey(_|-)pcrs":\[11\]' <<<"$dump" && grep -q '"tpm2-pcrs":\[7\]' <<<"$dump"; then
+    say "TPM_RESEALED ok (новое состояние PCR 7, политика PCR 7 + подписанная 11, один слот)"
+else
+    say "ERROR перезапечатка: $(tail -n 2 /tmp/reseal.err 2>/dev/null) $(journalctl -b --no-pager | grep -m3 'DEVUZ-RESEAL' || true)"
+    grep -oE '"tpm2[^]]*]' <<<"$dump" | sed 's/^/  /'
+    fail=1
+fi
+# Второй запуск при рабочем TPM ничего не трогает.
+before=$(cryptsetup luksDump "$dev" | md5sum); /usr/lib/devuz/tpm-reseal
+[ "$(cryptsetup luksDump "$dev" | md5sum)" = "$before" ] || { say "ERROR перезапечатка при рабочем TPM изменила заголовок"; fail=1; }
+
 if [ "$fail" -eq 0 ]; then say OK; else say FAIL; fi
 systemctl start --no-block devuz-selftest.service

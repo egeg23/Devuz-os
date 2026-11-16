@@ -5,6 +5,7 @@ enable systemd-resolved.service
 enable devuz-ready.service
 enable devuz-luks-discard.service
 enable devuz-recovery-key.service
+enable devuz-tpm-reseal.service
 # TRIM раз в неделю (allow-discards пропускает его сквозь LUKS).
 enable fstrim.timer
 # Копия данных каждую ночь (devuz-backup).
