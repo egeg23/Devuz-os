@@ -34,6 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Скрипты на раннере (до сборки, секунды)
+        run: tests/reboot-guard.sh
+
       - name: Место на диске и рабочие каталоги
         run: |
           df -h / /mnt || true
