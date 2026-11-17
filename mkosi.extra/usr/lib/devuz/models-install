@@ -1,0 +1,83 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Поставить (обновить) модель так, чтобы работающий сервер модели никогда не
+# увидел наполовину записанный файл:
+#   1. новая модель копируется в /var/lib/devuz/models/<имя>.new (та же
+#      файловая система — значит, дальше можно переименовывать);
+#   2. models-verify --dir проверяет <имя>.new: подпись, номер выпуска (не
+#      меньше принятого — защита от отката), размеры и sha256, лишние файлы;
+#   3. только после удачной проверки <имя>.new и <имя> меняются местами одним
+#      вызовом renameat2(RENAME_EXCHANGE) (`exch` из util-linux); нет `exch` —
+#      двумя rename подряд. Сервер модели держит старые веса через mmap: их
+#      файлы остаются целыми, пока он их не отпустит, а новый запуск сервера
+#      видит уже целый новый каталог;
+#   4. номер выпуска запоминается (/var/lib/devuz/models-release/<имя>),
+#      прежний каталог (теперь <имя>.new) удаляется.
+# Проверка не прошла — <имя>.new удаляется, рабочая модель не тронута.
+#   models-install [--stt] <каталог-источник> [<имя>]
+# Источник — каталог с MANIFEST, MANIFEST.sig и файлами модели (скачанный
+# обновлятелем, с флешки и т. п.). Имя по умолчанию — из name: в манифесте.
+# Пути — те же переменные DEVUZ_MODELS_*, что у models-verify (только для
+# проверки на раннере).
+set -u
+root=${DEVUZ_MODELS_ROOT:-/var/lib/devuz/models}
+releases=${DEVUZ_MODELS_RELEASES:-/var/lib/devuz/models-release}
+verify=${DEVUZ_MODELS_VERIFY:-/usr/lib/devuz/models-verify}
+fail() { echo "DEVUZ-MODELS-INSTALL ERROR ${name:-?}: $*"; exit 78; }
+
+stt=()
+[ "${1:-}" = --stt ] && { stt=(--stt); shift; }
+src=${1:-}
+[ -n "$src" ] && [ -f "$src/MANIFEST" ] || fail "нет каталога модели с MANIFEST: «$src»"
+name=${2:-$(sed -n 's/^name:[[:space:]]*//p' "$src/MANIFEST" | head -n1)}
+[[ "$name" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail "плохое имя модели «$name»"
+[[ "$name" != *.new ]] || fail "имя модели не может кончаться на .new"
+dst=$root/$name new=$root/$name.new
+src=$(realpath -- "$src")
+[ "$src" != "$(realpath -m -- "$dst")" ] || fail "источник — уже рабочий каталог модели"
+
+mkdir -p "$root"
+# Две установки одной модели разом — нельзя.
+exec 9>"$root/.install.lock"
+flock -n 9 || fail "уже идёт другая установка модели"
+
+# Остаток прерванной установки — удалить, начать заново.
+rm -rf -- "$new"
+mkdir "$new" || fail "не создать $new"
+cp -a --reflink=auto -- "$src"/. "$new"/ || { rm -rf -- "$new"; fail "не скопировать модель в $new (место на диске?)"; }
+sync -f "$new" 2>/dev/null || sync
+
+if ! out=$("$verify" "${stt[@]}" --dir "$new" "$name" 2>&1); then
+    rm -rf -- "$new"
+    fail "проверка не прошла, рабочая модель не тронута: ${out##*ERROR }"
+fi
+printf '%s\n' "$out"
+rel=$(sed -n 's/^release:[[:space:]]*//p' "$new/MANIFEST")
+
+if [ ! -e "$dst" ]; then
+    mv -T -- "$new" "$dst" || fail "не переименовать $new → $dst"
+    how="rename"
+elif command -v exch >/dev/null && exch -- "$new" "$dst" 2>/dev/null; then
+    how="exch"
+else
+    # Без атомарного обмена: между двумя rename каталога <имя> нет долю
+    # секунды. Работающий сервер это не задевает (mmap), а запуск в этот миг
+    # просто не найдёт модель и упадёт с понятной причиной.
+    mv -T -- "$dst" "$root/$name.old.$$" && mv -T -- "$new" "$dst" ||
+        fail "не подменить каталог модели (остаток: $root/$name.old.$$)"
+    mv -T -- "$root/$name.old.$$" "$new"
+    how="rename×2"
+fi
+
+# Номер выпуска — только после подмены: если подмена не удалась, коробка не
+# должна отвергать модель, которая всё ещё рабочая.
+mkdir -p "$releases"
+have=$(cat "$releases/$name" 2>/dev/null || echo 0)
+[[ "$have" =~ ^[0-9]{1,18}$ ]] || have=0
+if (( 10#$rel > 10#$have )); then
+    printf '%s\n' "$rel" >"$releases/$name.tmp" && mv -f "$releases/$name.tmp" "$releases/$name"
+fi
+# Прежние веса: сервер, если он их ещё держит, читает уже удалённые файлы —
+# место освободится, когда он перезапустится на новой модели.
+rm -rf -- "$new"
+echo "DEVUZ-MODELS-INSTALL $name: выпуск $rel поставлен ($how)"

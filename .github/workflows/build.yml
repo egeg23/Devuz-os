@@ -56,6 +56,9 @@ jobs:
       - name: Очередь «Ядра» — старение приоритета (секунды)
         run: node --test tests/core-queue.test.js
 
+      - name: Модели — защита от отката и подмена через .new (секунды)
+        run: tests/models-safe.sh
+
       - name: Установить mkosi v27.1
         uses: systemd/mkosi@ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b # v27.1
 
@@ -217,9 +220,15 @@ jobs:
           mkdir -p "$d"
           curl -fsSL -o "$d/$f" "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/$f"
           echo "$sha  $d/$f" | sha256sum --strict -c -
-          printf 'name: smollm2-135m\nversion: 1\nlicense: Apache-2.0\nformat: gguf\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
+          printf 'name: smollm2-135m\nrelease: 1\nversion: 1\nlicense: Apache-2.0\nformat: gguf\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
           GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
           cat "$d/MANIFEST"
+          # Тот же файл весов, выпуск 2: тест ставит его models-install и
+          # проверяет, что после него выпуск 1 отвергается (откат).
+          d2="$WORK/test-models-tree/usr/share/devuz/test-models/smollm2-135m.r2"
+          mkdir -p "$d2"
+          sed 's/^release: 1$/release: 2/' "$d/MANIFEST" >"$d2/MANIFEST"
+          GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d2/MANIFEST.sig" "$d2/MANIFEST"
           # Модель речи для теста: whisper small, 5 бит (MIT), ~190 МБ, понимает и
           # русский, и узбекский. Закреплена коммитом и sha256, манифест — тем же
           # тестовым ключом моделей.
@@ -229,7 +238,7 @@ jobs:
           mkdir -p "$d"
           curl -fsSL -o "$d/$f" "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/$f"
           echo "$sha  $d/$f" | sha256sum --strict -c -
-          printf 'name: whisper-small-q5\nversion: 1\nlicense: MIT\nformat: ggml\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
+          printf 'name: whisper-small-q5\nrelease: 1\nversion: 1\nlicense: MIT\nformat: ggml\nsha256 %s %s %s\n' "$sha" "$(stat -c %s "$d/$f")" "$f" >"$d/MANIFEST"
           GNUPGHOME="$WORK/gnupg-models" gpg --batch --detach-sign --output "$d/MANIFEST.sig" "$d/MANIFEST"
           cat "$d/MANIFEST"
           # Фразы для теста речи — синтез espeak-ng: русская — голосовым OGG/Opus,
@@ -680,7 +689,7 @@ jobs:
           export TEST_CRED=models EXPECT_VERSION="$DEVUZ_VERSION" LOG=models.log TEST_TITLE="Тест моделей"
           export TEST_TIMEOUT=900
           rc=0; tests/boot-test.sh || rc=$?
-          for k in MODEL_OK REAL_CHAT WEBUI_OFF NO_BYPASS STAMP_REUSED BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED; do
+          for k in MODEL_OK REAL_CHAT WEBUI_OFF NO_BYPASS STAMP_REUSED BAD_SIG_REFUSED BAD_HASH_REFUSED EXTRA_FILE_REFUSED INSTALL_SWAP ROLLBACK_REFUSED; do
             line=$(grep -m1 -o "DEVUZ-MODELS-TEST $k .*" models.log || true)
             echo "- ${line:-❌ нет DEVUZ-MODELS-TEST $k}" >>"$GITHUB_STEP_SUMMARY"
             [ -n "$line" ] || rc=1
