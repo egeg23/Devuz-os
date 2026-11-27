@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Замер распознавания речи на узбекском и смешанной русско-узбекской речи
+# (для суфлёра колл-центров в коробке). Ничего не собирает в образ и ничего
+# не публикует: только скачивает открытые записи и модели, прогоняет их через
+# whisper.cpp той же версии, что в коробке, и пишет таблицу в итог задачи.
+# Скорость здесь — машины GitHub, не коробки: её меряем на образце.
+name: stt-uz
+
+on:
+  pull_request:
+    paths: [tools/stt-bench/**, .github/workflows/stt-uz.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stt-uz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WHISPER_TAG: v1.9.5
+  WHISPER_COMMIT: d1be6fde11ac6e0407606b4e42fe72d34add8037
+  OPENAI_WHISPER_COMMIT: 86098128c0b4f24f0e2aa2994de830614b474227
+  # Сколько записей: узбекское чтение, русское чтение, ташкентская речь.
+  N_SETS: "50 30 40"
+
+jobs:
+  data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Записи
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip -q install pyarrow==26.0.1
+          /tmp/venv/bin/python3 -I tools/stt-bench/prepare.py "$RUNNER_TEMP/data" "$RUNNER_TEMP/cache" $N_SETS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stt-data
+          path: ${{ runner.temp }}/data
+          retention-days: 7
+
+  cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: whisper.cpp той же версии и с теми же флагами, что в образе коробки
+        run: |
+          git clone -q --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$RUNNER_TEMP/src"
+          test "$(git -C "$RUNNER_TEMP/src" rev-parse HEAD)" = "$WHISPER_COMMIT"
+          cmake -S "$RUNNER_TEMP/src" -B "$RUNNER_TEMP/b" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_SDL2=OFF
+          cmake --build "$RUNNER_TEMP/b" -j"$(nproc)" --target whisper-cli whisper-quantize
+          mkdir -p "$RUNNER_TEMP/bin" && cp "$RUNNER_TEMP/b/bin/whisper-cli" "$RUNNER_TEMP/b/bin/whisper-quantize" "$RUNNER_TEMP/bin/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stt-cli
+          path: ${{ runner.temp }}/bin
+          retention-days: 7
+
+  model:
+    needs: [data, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Готовые модели whisper.cpp (MIT), закреплены коммитом.
+          - { id: box, label: "Коробка сейчас: small, 5 бит", file: ggml-small-q5_1.bin }
+          - { id: medium, label: "medium, 5 бит", file: ggml-medium-q5_0.bin }
+          - { id: turbo, label: "large-v3-turbo, 5 бит", file: ggml-large-v3-turbo-q5_0.bin }
+          # Дообученные под узбекский (Apache-2.0), переводим в формат коробки.
+          - { id: navai-small, label: "navai small (узб.), 5 бит", repo: navai-uz/whisper-small-uzbek, sha: 4b432caf21c2752bca3384b5df1d41cf0da2801d, q: q5_1 }
+          - { id: navai-small-f16, label: "navai small (узб.), без сжатия", repo: navai-uz/whisper-small-uzbek, sha: 4b432caf21c2752bca3384b5df1d41cf0da2801d, q: f16 }
+          - { id: navai-medium, label: "navai medium (узб.), 5 бит", repo: navai-uz/whisper-medium-uzbek, sha: 9c67dea55c8ac11f237d60ca0c32e5dc5a8c3de5, q: q5_0 }
+          - { id: callcenter, label: "callcenter medium (узб., телефон), 5 бит", repo: Abduqayum/whisper-uzbek-medium-callcenter, sha: 0eed53663594a96292e1beaaaa0b2bdbea1a157e, q: q5_0 }
+          - { id: rubai, label: "rubaistt v2 medium (узб.), 5 бит", repo: islomov/rubaistt_v2_medium, sha: af4601176140501f8ffbced420f6e2e23c9bb071, q: q5_0 }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: stt-data, path: "${{ runner.temp }}/data" }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: stt-cli, path: "${{ runner.temp }}/bin" }
+      - name: Модель
+        env:
+          FILE: ${{ matrix.file }}
+          REPO: ${{ matrix.repo }}
+          SHA: ${{ matrix.sha }}
+          Q: ${{ matrix.q }}
+        run: |
+          chmod +x "$RUNNER_TEMP"/bin/*
+          m="$RUNNER_TEMP/model.bin"
+          if [ -n "$FILE" ]; then
+            curl -fsSL --retry 4 -o "$m" "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/$FILE"
+          else
+            git clone -q --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$RUNNER_TEMP/src"
+            git clone -q https://github.com/openai/whisper "$RUNNER_TEMP/oai"
+            git -C "$RUNNER_TEMP/oai" checkout -q "$OPENAI_WHISPER_COMMIT"
+            python3 -m venv /tmp/venv
+            /tmp/venv/bin/pip -q install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0
+            /tmp/venv/bin/pip -q install transformers==5.24.1 numpy==2.5.5 safetensors==0.8.0
+            PATH=/tmp/venv/bin:$PATH tools/stt-bench/convert.sh "$RUNNER_TEMP/src" "$RUNNER_TEMP/oai" \
+              "$RUNNER_TEMP/bin/whisper-quantize" "$REPO" "$SHA" "$Q" "$m"
+          fi
+          sha256sum "$m"
+      - name: Прогон
+        run: tools/stt-bench/run.sh "$RUNNER_TEMP/bin/whisper-cli" "$RUNNER_TEMP/model.bin" "$RUNNER_TEMP/data" "$RUNNER_TEMP/run"
+      - name: Ошибки
+        env:
+          ID: ${{ matrix.id }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/res"
+          python3 tools/stt-bench/score.py "$RUNNER_TEMP/data" "$RUNNER_TEMP/run" "$ID" "$LABEL" "$RUNNER_TEMP/model.bin" >"$RUNNER_TEMP/res/$ID.json"
+          python3 -c 'import json,sys
+          d=json.load(open(sys.argv[1]))
+          for k,s in d["sets"].items(): print(k, "WER", s["wer"], "CER", s["cer"], "x", s["xrt"])' "$RUNNER_TEMP/res/$ID.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stt-res-${{ matrix.id }}
+          path: ${{ runner.temp }}/res
+          retention-days: 30
+
+  report:
+    needs: model
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { pattern: stt-res-*, merge-multiple: true, path: "${{ runner.temp }}/res" }
+      - name: Таблица
+        run: |
+          python3 tools/stt-bench/report.py "$RUNNER_TEMP/res" | tee results.md >>"$GITHUB_STEP_SUMMARY"
+          test -s results.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stt-results
+          path: results.md
+          retention-days: 90
