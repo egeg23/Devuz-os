@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Замер GigaAM Multilingual v2 на тех же записях, что stt-uz. Отдельная задача:
+# модель грузится вместе с кодом её авторов, поэтому здесь нет секретов и прав
+# записи, а версия закреплена коммитом. В образ ничего не попадает.
+name: stt-uz-gigaam
+
+on:
+  pull_request:
+    paths: [tools/stt-gigaam/**, .github/workflows/stt-uz-gigaam.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stt-uz-gigaam-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gigaam:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: gigaam, label: "GigaAM v2 (21 язык), запись целиком", mode: full }
+          - { id: gigaam-stream, label: "GigaAM v2, потоком, задержка 640 мс", mode: stream }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: Записи (те же, что в stt-uz)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip -q install pyarrow==26.0.1
+          /tmp/venv/bin/python3 -I tools/stt-bench/prepare.py "$RUNNER_TEMP/data" "$RUNNER_TEMP/cache" 50 30 40
+          rm -rf "$RUNNER_TEMP/cache"
+      - name: Прогон
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          python3 -m venv /tmp/g
+          /tmp/g/bin/pip -q install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchaudio
+          /tmp/g/bin/pip -q install numpy==2.5.5 transformers==4.57.6 onnx==1.23.2 onnxruntime==1.32.0 \
+            hydra-core==1.3.8 omegaconf==2.3.1 sentencepiece==0.2.3 tqdm==4.70.1 safetensors==0.8.0 soundfile
+          /tmp/g/bin/python tools/stt-gigaam/gigaam.py "$RUNNER_TEMP/data" "$RUNNER_TEMP/run" "$MODE"
+      - name: Ошибки
+        env:
+          ID: ${{ matrix.id }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/res"
+          python3 tools/stt-bench/score.py "$RUNNER_TEMP/data" "$RUNNER_TEMP/run" "$ID" "$LABEL" >"$RUNNER_TEMP/res/$ID.json"
+          python3 -c 'import json,sys
+          d=json.load(open(sys.argv[1]))
+          for k,s in d["sets"].items(): print(k, "WER", s["wer"], "CER", s["cer"], "x", s["xrt"])' "$RUNNER_TEMP/res/$ID.json"
+          python3 tools/stt-bench/report.py "$RUNNER_TEMP/res" >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stt-res-${{ matrix.id }}
+          path: ${{ runner.temp }}/res
+          retention-days: 30
